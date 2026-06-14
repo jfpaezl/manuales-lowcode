@@ -15,6 +15,10 @@ class AppConfig:
     author: str = ""     # nombre del autor/responsable, recordado para el documento
     area: str = ""       # área/sector, recordada para los Datos generales
     worker_model: str = ""  # modelo "obrero" (chico) para la generación orquestada
+    # Identidad de marca que aparece en la portada del PDF.
+    brand_name: str = ""     # nombre de la empresa/marca
+    brand_tagline: str = ""  # subtítulo/lema bajo la marca
+    brand_logo: str = ""     # ruta a la imagen del logo (PNG/JPG)
 
 
 def _toml_escape(value: str) -> str:
@@ -31,6 +35,9 @@ def save_config(
     author: str = "",
     area: str = "",
     worker_model: str = "",
+    brand_name: str = "",
+    brand_tagline: str = "",
+    brand_logo: str = "",
 ) -> None:
     """Escribe config.toml. tomllib solo lee, así que serializamos a mano
     (controlamos el formato, es seguro)."""
@@ -45,7 +52,11 @@ def save_config(
         f'db_path = "{_toml_escape(db_path)}"\n\n'
         "[user]\n"
         f'name = "{_toml_escape(author)}"\n'
-        f'area = "{_toml_escape(area)}"\n'
+        f'area = "{_toml_escape(area)}"\n\n'
+        "[brand]\n"
+        f'name    = "{_toml_escape(brand_name)}"\n'
+        f'tagline = "{_toml_escape(brand_tagline)}"\n'
+        f'logo    = "{_toml_escape(brand_logo)}"\n'
     )
     Path(path).write_text(content, encoding="utf-8")
 
@@ -64,6 +75,11 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
     author = user.get("name", "").strip()
     area = user.get("area", "").strip()
 
+    brand = data.get("brand", {})
+    brand_name = brand.get("name", "").strip()
+    brand_tagline = brand.get("tagline", "").strip()
+    brand_logo = brand.get("logo", "").strip()
+
     ai_data = data.get("ai", {})
     api_key = ai_data.get("api_key", "").strip()
     worker_model = ai_data.get("worker_model", "").strip()
@@ -76,5 +92,6 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
         )
 
     return AppConfig(
-        db_path=db_path, ai=ai_cfg, author=author, area=area, worker_model=worker_model
+        db_path=db_path, ai=ai_cfg, author=author, area=area, worker_model=worker_model,
+        brand_name=brand_name, brand_tagline=brand_tagline, brand_logo=brand_logo,
     )

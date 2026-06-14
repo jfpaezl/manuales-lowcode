@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QBuffer, QByteArray, QIODevice, Qt
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtPdf import QPdfDocument
 from PyQt6.QtPdfWidgets import QPdfView
 from PyQt6.QtWidgets import (
@@ -17,6 +18,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSplitter,
     QTabWidget,
@@ -31,6 +33,7 @@ from ..domain.entities import Manual, ManualType
 from .ai_worker import AIWorker
 from .categories_dialog import CategoriesDialog
 from .document_data_dialog import DocumentDataDialog
+from .identity_dialog import IdentityDialog
 from .new_manual_dialog import NewManualDialog
 from .pending_dialog import PendingDialog
 from .settings_dialog import SettingsDialog
@@ -41,6 +44,14 @@ _AI_MODES = [
     ("Transcripción → manual", "transcription"),
     ("Complementar manual actual", "complement"),
 ]
+
+# El cuadro de texto de la IA adapta su placeholder según el modo elegido.
+_AI_PLACEHOLDERS = {
+    "generate": "Tema u objeto a documentar (ej: «Aprobación de facturas en Power Apps»)…",
+    "document_code": "Pegá acá el código a documentar (VBA, Power Fx, Python…)…",
+    "transcription": "Pegá la transcripción de la explicación hablada…",
+    "complement": "Qué agregar o corregir en el manual actual (ej: «agregá que avisa por Teams»)…",
+}
 
 
 class MainWindow(QMainWindow):
@@ -55,6 +66,8 @@ class MainWindow(QMainWindow):
         initial_area: str = "",
         on_set_area: Callable[[str], None] | None = None,
         list_models: Callable[[str, str], list[str]] | None = None,
+        initial_identity: dict | None = None,
+        on_set_identity: Callable[[str, str, str], None] | None = None,
     ) -> None:
         super().__init__()
         self._svc = service
@@ -65,6 +78,8 @@ class MainWindow(QMainWindow):
         self._on_set_author = on_set_author
         self._area = initial_area
         self._on_set_area = on_set_area
+        self._identity = initial_identity or {}
+        self._on_set_identity = on_set_identity
         self._current: Manual | None = None
         self._worker: AIWorker | None = None
         # Si True, el resultado de la IA reemplaza el editor; si False, se agrega abajo.
@@ -85,9 +100,29 @@ class MainWindow(QMainWindow):
         splitter.setSizes([300, 880])
         self.setCentralWidget(splitter)
 
+        self.statusBar().showMessage("Listo.")
+        self._setup_shortcuts()
         self._refresh_manual_list()
         self._set_editor_enabled(False)
         self._set_ai_enabled(self._svc.ai_ready)
+        self._update_ai_placeholder()
+
+    def _setup_shortcuts(self) -> None:
+        QShortcut(QKeySequence.StandardKey.New, self, activated=self._on_new_manual)   # Ctrl+N
+        QShortcut(QKeySequence.StandardKey.Save, self, activated=self._on_save_version)  # Ctrl+S
+        QShortcut(QKeySequence("F2"), self, activated=self._on_rename_manual)
+        # Eliminar SOLO con la lista enfocada: no pisa el Supr al editar texto.
+        del_sc = QShortcut(QKeySequence.StandardKey.Delete, self._list)
+        del_sc.setContext(Qt.ShortcutContext.WidgetShortcut)
+        del_sc.activated.connect(self._on_delete_manual)
+
+    def _update_ai_placeholder(self, *_) -> None:
+        mode = self._ai_mode.currentData()
+        self._ai_input.setPlaceholderText(_AI_PLACEHOLDERS.get(mode, "…"))
+
+    def _ai_busy(self, busy: bool) -> None:
+        """Muestra/oculta la barra de progreso indeterminada de la IA."""
+        self._progress.setVisible(busy)
 
     def _build_menu(self) -> None:
         menu = self.menuBar().addMenu("⚙ Configuración")
@@ -95,6 +130,25 @@ class MainWindow(QMainWindow):
         action.triggered.connect(self._open_settings)
         cat_action = menu.addAction("Categorías…")
         cat_action.triggered.connect(self._open_categories)
+        brand_action = menu.addAction("Identidad del documento…")
+        brand_action.triggered.connect(self._open_identity)
+
+    def _open_identity(self) -> None:
+        if self._on_set_identity is None:
+            QMessageBox.information(self, "Identidad", "La configuración de identidad no está disponible.")
+            return
+        dlg = IdentityDialog(
+            self,
+            brand=self._identity.get("brand", ""),
+            tagline=self._identity.get("tagline", ""),
+            logo=self._identity.get("logo", ""),
+        )
+        if not dlg.exec():
+            return
+        vals = dlg.values()
+        self._on_set_identity(vals["brand"], vals["tagline"], vals["logo"])
+        self._identity = vals
+        self.statusBar().showMessage("✓ Identidad del documento actualizada", 5000)
 
     def _open_categories(self) -> None:
         CategoriesDialog(self._svc, self).exec()
@@ -176,6 +230,7 @@ class MainWindow(QMainWindow):
         self._ai_mode = QComboBox()
         for label, value in _AI_MODES:
             self._ai_mode.addItem(label, value)
+        self._ai_mode.currentIndexChanged.connect(self._update_ai_placeholder)
         top.addWidget(self._ai_mode)
         self._ai_btn = QPushButton("✨ Generar con IA")
         self._ai_btn.clicked.connect(self._on_generate_ai)
@@ -203,6 +258,13 @@ class MainWindow(QMainWindow):
         )
         self._ai_input.setFixedHeight(90)
         layout.addWidget(self._ai_input)
+
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 0)        # indeterminada (va y viene)
+        self._progress.setTextVisible(False)
+        self._progress.setFixedHeight(6)
+        self._progress.setVisible(False)
+        layout.addWidget(self._progress)
 
         self._ai_status = QLabel("")
         self._ai_status.setStyleSheet("color: #16a085;")
@@ -279,14 +341,26 @@ class MainWindow(QMainWindow):
     def _set_editor_enabled(self, enabled: bool) -> None:
         self._tabs.setEnabled(enabled)
 
-    def _refresh_manual_list(self) -> None:
+    def _refresh_manual_list(self, select_id: int | None = None) -> None:
         self._list.blockSignals(True)
         self._list.clear()
-        for m in self._svc.list_manuals():
+        manuals = self._svc.list_manuals()
+        if not manuals:
+            # Estado vacío: guía en vez de una lista en blanco.
+            empty = QListWidgetItem("Todavía no hay manuales.\nTocá  ➕ Nuevo  para crear el primero.")
+            empty.setFlags(Qt.ItemFlag.NoItemFlags)  # no seleccionable
+            empty.setForeground(Qt.GlobalColor.gray)
+            self._list.addItem(empty)
+        target_row = None
+        for m in manuals:
             item = QListWidgetItem(f"{m.title}  ·  {m.type.value}")
             item.setData(Qt.ItemDataRole.UserRole, m.id)
             self._list.addItem(item)
+            if select_id is not None and m.id == select_id:
+                target_row = self._list.count() - 1
         self._list.blockSignals(False)
+        if target_row is not None:
+            self._list.setCurrentRow(target_row)  # dispara la selección (continuidad)
 
     def _on_select_manual(self, current: QListWidgetItem | None, _prev=None) -> None:
         if current is None:
@@ -346,8 +420,9 @@ class MainWindow(QMainWindow):
         dlg = NewManualDialog(self, categories=categories)
         if dlg.exec():
             v = dlg.values()
-            self._svc.create_manual(v["title"], v["tipo"], v["categoria"], v["description"])
-            self._refresh_manual_list()
+            m = self._svc.create_manual(v["title"], v["tipo"], v["categoria"], v["description"])
+            self._refresh_manual_list(select_id=m.id)  # queda seleccionado el nuevo
+            self.statusBar().showMessage(f"✓ Manual «{m.title}» creado", 5000)
 
     def _on_rename_manual(self) -> None:
         if not self._current:
@@ -363,12 +438,9 @@ class MainWindow(QMainWindow):
         except ValueError as exc:
             QMessageBox.warning(self, "Renombrar", str(exc))
             return
-        self._current = self._svc.get_manual(self._current.id)
-        self._refresh_manual_list()
-        if self._current:
-            self._title_label.setText(
-                f"{self._current.title}  ·  {self._current.type.value} / {self._current.category}"
-            )
+        mid = self._current.id
+        self._refresh_manual_list(select_id=mid)  # re-selecciona y refresca el título
+        self.statusBar().showMessage("✓ Título actualizado", 5000)
 
     def _on_delete_manual(self) -> None:
         if not self._current:
@@ -377,10 +449,12 @@ class MainWindow(QMainWindow):
             self, "Eliminar", f"¿Borrar '{self._current.title}' y todas sus versiones?"
         )
         if ok == QMessageBox.StandardButton.Yes:
+            title = self._current.title
             self._svc.delete_manual(self._current.id)
             self._current = None
             self._refresh_manual_list()
             self._set_editor_enabled(False)
+            self.statusBar().showMessage(f"🗑 «{title}» eliminado", 5000)
 
     def _on_save_version(self) -> None:
         if not self._current:
@@ -405,10 +479,13 @@ class MainWindow(QMainWindow):
             self._svc.save_version(self._current.id, [section], note, generate_pdf=False)
 
         self._current = self._svc.get_manual(self._current.id)
+        latest = self._current.latest_version
         self._change_note.clear()
         self._refresh_versions()
         self._load_latest_pdf()
         self._tabs.setCurrentIndex(1)  # ir a la vista PDF
+        num = latest.version if latest else "?"
+        self.statusBar().showMessage(f"✓ Versión {num} guardada", 5000)
 
     def _on_open_version(self, item: QListWidgetItem) -> None:
         self._show_pdf(item.data(Qt.ItemDataRole.UserRole))
@@ -503,6 +580,7 @@ class MainWindow(QMainWindow):
             )
 
         self._ai_btn.setEnabled(False)
+        self._ai_busy(True)
         self._ai_status.setText("Generando… (puede tardar unos segundos)")
         self._worker = AIWorker(call)
         self._worker.finished_ok.connect(self._on_ai_done)
@@ -559,6 +637,7 @@ class MainWindow(QMainWindow):
         self._ai_replace_editor = False  # importar agrega, no reemplaza
         self._ai_btn.setEnabled(False)
         self._import_btn.setEnabled(False)
+        self._ai_busy(True)
         self._ai_status.setText(f"Importado «{extracted.name}». Redactando el manual con IA…")
         self._worker = AIWorker(call)
         self._worker.finished_ok.connect(self._on_ai_done)
@@ -566,6 +645,7 @@ class MainWindow(QMainWindow):
         self._worker.start()
 
     def _on_ai_done(self, markdown: str) -> None:
+        self._ai_busy(False)
         if self._ai_replace_editor:
             # Complementar: el resultado YA integra lo anterior → reemplaza.
             self._editor.setPlainText(markdown)
@@ -578,6 +658,7 @@ class MainWindow(QMainWindow):
         self._import_btn.setEnabled(self._svc.extractor_ready)
 
     def _on_ai_error(self, message: str) -> None:
+        self._ai_busy(False)
         self._ai_status.setText("")
         self._ai_btn.setEnabled(True)
         self._import_btn.setEnabled(self._svc.extractor_ready)
@@ -610,6 +691,7 @@ class MainWindow(QMainWindow):
         self._ai_btn.setEnabled(False)
         self._import_btn.setEnabled(False)
         self._complete_btn.setEnabled(False)
+        self._ai_busy(True)
         self._ai_status.setText(f"Buscando qué falta… ({len(slots)} pendiente/s)")
         # La IA formula las preguntas (red) → worker. El relleno es por código.
         self._worker = AIWorker(lambda: "\n".join(self._svc.ai_questions_for_pending(base)))
@@ -618,6 +700,7 @@ class MainWindow(QMainWindow):
         self._worker.start()
 
     def _on_questions_ready(self, raw: str) -> None:
+        self._ai_busy(False)
         self._ai_btn.setEnabled(True)
         self._import_btn.setEnabled(self._svc.extractor_ready)
         self._complete_btn.setEnabled(self._svc.ai_ready)

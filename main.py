@@ -54,7 +54,9 @@ def main() -> int:
     init_db(conn)
     repo = SQLiteManualRepository(conn)
     categories = SQLiteCategoryRepository(conn)
-    renderer = WeasyPrintRenderer()
+    renderer = WeasyPrintRenderer(
+        brand=config.brand_name, tagline=config.brand_tagline, logo_path=config.brand_logo
+    )
     ai = OpenAICompatibleProvider(config.ai) if config.ai else None
     worker_ai = _build_worker(config)
     # OJO el orden: la Solution va PRIMERO porque también contiene .msapp adentro
@@ -80,6 +82,9 @@ def main() -> int:
         "author": config.author,
         "area": config.area,
         "worker_model": config.worker_model,
+        "brand_name": config.brand_name,
+        "brand_tagline": config.brand_tagline,
+        "brand_logo": config.brand_logo,
     }
 
     def _persist() -> None:
@@ -92,6 +97,9 @@ def main() -> int:
             author=state["author"],
             area=state["area"],
             worker_model=state["worker_model"],
+            brand_name=state["brand_name"],
+            brand_tagline=state["brand_tagline"],
+            brand_logo=state["brand_logo"],
         )
 
     # --- Callback: configurar IA en caliente desde la UI ---
@@ -114,6 +122,12 @@ def main() -> int:
     # --- Callback: recordar el área (para los Datos generales) ---
     def set_area(area: str) -> None:
         state["area"] = area
+        _persist()
+
+    # --- Callback: identidad del documento (marca/lema/logo del PDF) ---
+    def set_identity(brand: str, tagline: str, logo: str) -> None:
+        renderer.set_identity(brand, tagline, logo)  # aplica al instante
+        state.update(brand_name=brand, brand_tagline=tagline, brand_logo=logo)
         _persist()
 
     initial_ai = (
@@ -142,6 +156,12 @@ def main() -> int:
         initial_area=config.area,
         on_set_area=set_area,
         list_models=list_models,
+        initial_identity={
+            "brand": config.brand_name,
+            "tagline": config.brand_tagline,
+            "logo": config.brand_logo,
+        },
+        on_set_identity=set_identity,
     )
     window.show()
     return app.exec()

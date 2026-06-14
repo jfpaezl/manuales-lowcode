@@ -8,7 +8,9 @@
 
   <!-- Portada -->
   <section class="cover">
+    {% if logo_uri %}<img class="cover-logo" src="{{ logo_uri }}" alt="logo">{% endif %}
     <div class="cover-brand">{{ brand }}</div>
+    {% if tagline %}<div class="cover-tagline">{{ tagline }}</div>{% endif %}
     <div class="cover-tag">{{ tipo_label }} · {{ categoria_label }}</div>
     <h1 class="cover-title">{{ manual.title }}</h1>
     {% if manual.description %}<p class="cover-desc">{{ manual.description }}</p>{% endif %}

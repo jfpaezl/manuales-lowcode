@@ -76,11 +76,22 @@ body {
   flex-direction: column;
   justify-content: center;
 }
+.cover-logo {
+  max-height: 2.2cm;
+  max-width: 8cm;
+  margin-bottom: 0.9cm;
+}
 .cover-brand {
   font-size: 12pt;
   font-weight: 600;
   letter-spacing: 1px;
   color: #fff;
+  margin-bottom: 1.4cm;
+}
+.cover-tagline {
+  color: var(--accent);
+  font-size: 11pt;
+  margin-top: -1cm;       /* pega el lema debajo de la marca */
   margin-bottom: 1.4cm;
 }
 .cover-brand::before {
