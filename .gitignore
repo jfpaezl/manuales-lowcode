@@ -1,0 +1,21 @@
+# Entorno
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Config sensible (API keys)
+.env
+config.toml
+
+# Base de datos local
+*.db
+*.sqlite
+*.sqlite3
+
+# PDFs exportados a disco (los oficiales viven en SQLite)
+exports/
+
+# IDE
+.idea/
+.vscode/

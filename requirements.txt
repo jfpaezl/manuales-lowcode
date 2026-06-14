@@ -1,0 +1,22 @@
+# --- Núcleo de la app ---
+PyQt6>=6.7
+
+# --- Generación de PDF (motor por defecto) ---
+# OJO en Windows: WeasyPrint necesita GTK/Pango instalados aparte.
+# Ver README.md sección "Instalación en Windows".
+weasyprint>=63
+Jinja2>=3.1
+markdown>=3.6
+
+# --- IA (cliente OpenAI-compatible → OpenCode Go u otros) ---
+# La config se lee de config.toml con tomllib (stdlib), no hace falta dotenv.
+openai>=1.40
+
+# --- Importar paquetes (Power Apps .msapp trae el código fuente en .pa.yaml) ---
+PyYAML>=6.0
+
+# --- Importar macros VBA de Excel (.xlsm): extrae el código del vbaProject.bin ---
+oletools>=0.60
+
+# --- Testing ---
+pytest>=8.0

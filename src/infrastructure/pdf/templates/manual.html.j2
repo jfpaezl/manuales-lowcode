@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <title>{{ manual.title }}</title>
+</head>
+<body>
+
+  <!-- Portada -->
+  <section class="cover">
+    <div class="cover-brand">{{ brand }}</div>
+    <div class="cover-tag">{{ tipo_label }} · {{ categoria_label }}</div>
+    <h1 class="cover-title">{{ manual.title }}</h1>
+    {% if manual.description %}<p class="cover-desc">{{ manual.description }}</p>{% endif %}
+    <div class="cover-meta">
+      <span>Versión {{ version.version }}</span>
+      <span>{{ fecha }}</span>
+    </div>
+  </section>
+
+  <!-- Contenido -->
+  <main>
+    {{ body_html | safe }}
+  </main>
+
+</body>
+</html>

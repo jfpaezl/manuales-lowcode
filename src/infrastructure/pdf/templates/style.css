@@ -1,0 +1,171 @@
+/* Estilo del PDF — Paleta de marca corporativa (configurable).
+   WeasyPrint entiende @page, contadores y page-break. */
+
+/* --- Tipografía de marca: IBM Plex (OFL, incrustada en el PDF) ---
+   Los .ttf viven en fonts/ y WeasyPrint los embebe en el documento. */
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url(fonts/IBMPlexSans-Regular.ttf);
+  font-weight: 400;
+  font-style: normal;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url(fonts/IBMPlexSans-SemiBold.ttf);
+  font-weight: 600;
+  font-style: normal;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url(fonts/IBMPlexSans-Bold.ttf);
+  font-weight: 700;
+  font-style: normal;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url(fonts/IBMPlexMono-Regular.ttf);
+  font-weight: 400;
+  font-style: normal;
+}
+
+/* --- Paleta de marca --- */
+:root {
+  --navy:         #15192C;  /* Azul oscuro / institucional — títulos, portada */
+  --accent:       #2F71E5;  /* Azul acento — énfasis, datos destacados */
+  --accent-deep:  #103981;  /* Azul fuerte — información importante */
+  --base:         #ECEFF1;  /* Gris claro / base — fondos suaves */
+  --text:         #263238;  /* Neutro oscuro — cuerpo */
+  --muted:        #637D8D;  /* Gris medio — metadatos */
+  --red:          #D74028;  /* Rojo principal — SOLO alertas/énfasis controlado */
+}
+
+@page {
+  size: A4;
+  margin: 2.2cm 2cm;
+  @bottom-center {
+    content: "Página " counter(page) " de " counter(pages);
+    font-family: "IBM Plex Sans", Arial, sans-serif;
+    font-size: 9pt;
+    color: var(--muted);
+  }
+}
+
+/* La portada es full-bleed (sin margen) y NO lleva número de página:
+   con margin:0 no hay caja para el footer y se desbordaba fuera de la hoja. */
+@page :first {
+  margin: 0;
+  @bottom-center { content: none; }
+}
+
+body {
+  font-family: "IBM Plex Sans", "Segoe UI", Arial, sans-serif;
+  color: var(--text);
+  font-size: 11pt;
+  line-height: 1.55;
+}
+
+/* --- Portada --- */
+.cover {
+  page-break-after: always;
+  height: 100vh;
+  padding: 4cm 2.5cm;
+  background: var(--navy);
+  color: #fff;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.cover-brand {
+  font-size: 12pt;
+  font-weight: 600;
+  letter-spacing: 1px;
+  color: #fff;
+  margin-bottom: 1.4cm;
+}
+.cover-brand::before {
+  content: "";
+  display: inline-block;
+  width: 26px;
+  height: 4px;
+  background: var(--red);   /* guiño de marca controlado */
+  vertical-align: middle;
+  margin-right: 10px;
+}
+.cover-tag {
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  font-size: 10pt;
+  color: var(--accent);
+  margin-bottom: 0.5cm;
+}
+.cover-title { font-size: 30pt; font-weight: 700; margin: 0 0 0.4cm; line-height: 1.1; }
+.cover-desc { font-size: 12pt; opacity: 0.85; max-width: 14cm; }
+.cover-meta {
+  margin-top: auto;
+  display: flex;
+  justify-content: space-between;
+  font-size: 10pt;
+  color: #aab9c2;
+  border-top: 1px solid rgba(255,255,255,0.25);
+  padding-top: 0.4cm;
+}
+
+/* --- Contenido --- */
+main { counter-reset: section; }
+
+section { margin-bottom: 0.8cm; }
+
+section h2 {
+  counter-increment: section;
+  color: var(--navy);
+  font-weight: 600;
+  border-bottom: 2px solid var(--accent);
+  padding-bottom: 4px;
+  font-size: 15pt;
+  page-break-after: avoid;
+}
+section h2::before { content: counter(section) ". "; color: var(--accent); }
+
+h3 { color: var(--accent-deep); font-weight: 600; font-size: 12.5pt; }
+
+a { color: var(--accent); }
+
+code {
+  background: var(--base);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: "IBM Plex Mono", Consolas, monospace;
+  font-size: 9.5pt;
+  color: var(--navy);
+}
+pre {
+  background: var(--navy);
+  color: #e8eef5;
+  padding: 12px 16px;
+  border-radius: 6px;
+  overflow-x: auto;
+  page-break-inside: avoid;
+}
+pre code { background: none; color: inherit; padding: 0; }
+
+table { border-collapse: collapse; width: 100%; margin: 0.4cm 0; }
+th, td { border: 1px solid #d2d6dc; padding: 6px 10px; text-align: left; font-size: 10pt; }
+th { background: var(--base); color: var(--navy); }
+
+blockquote {
+  border-left: 4px solid var(--accent);
+  margin: 0.4cm 0;
+  padding: 4px 14px;
+  color: var(--muted);
+  background: var(--base);
+}
+
+/* --- Callouts semánticos (canales digitales) ---
+   Rojo/cálido reservado a alertas, según la guía de marca. */
+.callout { padding: 10px 14px; border-radius: 6px; margin: 0.4cm 0; page-break-inside: avoid; }
+.callout.info    { background: #CFE7FE; border-left: 4px solid #0D4ED0; }
+.callout.success { background: #DAFAD2; border-left: 4px solid #188737; }
+.callout.warning { background: #FEF4CC; border-left: 4px solid #D68502; }
+.callout.alert,
+.callout.error   { background: #FDE3D3; border-left: 4px solid var(--red); color: #7a1d12; }

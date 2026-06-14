@@ -1,0 +1,18 @@
+# Copiá este archivo a config.toml y completá tus valores.
+# config.toml NUNCA se commitea (está en .gitignore).
+# Se lee con tomllib (stdlib de Python 3.11+).
+
+[ai]
+# --- Proveedor de IA (OpenAI-compatible) ---
+# Para OpenCode Go: tu API key del plan + el endpoint OpenAI-compatible.
+api_key  = "tu-api-key-aca"
+base_url = "https://opencode.ai/zen/go/v1"   # OJO: Go lleva /go/ en el medio
+model    = "glm-5.1"
+
+# Otros proveedores compatibles (cambiá base_url + model):
+#   OpenRouter:    base_url = "https://openrouter.ai/api/v1"
+#   Ollama local:  base_url = "http://localhost:11434/v1"   (api_key cualquier cosa)
+
+[storage]
+# Ruta del archivo SQLite. Todo (manuales, versiones, PDFs) vive acá.
+db_path = "manuales.db"
