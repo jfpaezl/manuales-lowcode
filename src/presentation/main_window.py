@@ -34,6 +34,7 @@ from .ai_worker import AIWorker
 from .categories_dialog import CategoriesDialog
 from .document_data_dialog import DocumentDataDialog
 from .identity_dialog import IdentityDialog
+from .import_dialog import ImportDialog
 from .new_manual_dialog import NewManualDialog
 from .pending_dialog import PendingDialog
 from .settings_dialog import SettingsDialog
@@ -87,6 +88,11 @@ class MainWindow(QMainWindow):
         # Estado del flujo "Completar pendientes" (entre la pregunta IA y el relleno).
         self._pending_base = ""
         self._pending_count = 0
+        # Borradores generados por importación, aún sin guardar: manual_id -> markdown.
+        self._drafts: dict[int, str] = {}
+        # Estado de la importación dual en curso (funcional → técnico, en 2 pasos).
+        self._import_ctx: dict = {}
+        self._import_func_id: int | None = None
 
         self.setWindowTitle("Manuales Low-Code")
         self.resize(1180, 760)
@@ -373,10 +379,13 @@ class MainWindow(QMainWindow):
         self._title_label.setText(
             f"{self._current.title}  ·  {self._current.type.value} / {self._current.category}"
         )
-        # Cargar el Markdown de la última versión para re-editar
+        # Cargar el Markdown de la última versión para re-editar; si es un manual
+        # recién importado sin guardar, cargar su borrador.
         latest = self._current.latest_version
         if latest and latest.sections:
             self._editor.setPlainText(latest.sections[0].source_markdown)
+        elif self._current.id in self._drafts:
+            self._editor.setPlainText(self._drafts[self._current.id])
         else:
             self._editor.clear()
         self._change_note.clear()
@@ -450,6 +459,7 @@ class MainWindow(QMainWindow):
         )
         if ok == QMessageBox.StandardButton.Yes:
             title = self._current.title
+            self._drafts.pop(self._current.id, None)
             self._svc.delete_manual(self._current.id)
             self._current = None
             self._refresh_manual_list()
@@ -478,6 +488,7 @@ class MainWindow(QMainWindow):
                 return
             self._svc.save_version(self._current.id, [section], note, generate_pdf=False)
 
+        self._drafts.pop(self._current.id, None)  # ya guardado: deja de ser borrador
         self._current = self._svc.get_manual(self._current.id)
         latest = self._current.latest_version
         self._change_note.clear()
@@ -588,9 +599,8 @@ class MainWindow(QMainWindow):
         self._worker.start()
 
     def _on_import_package(self) -> None:
-        if not self._current:
-            QMessageBox.information(self, "Importar", "Seleccioná un manual primero.")
-            return
+        """Importa un paquete y genera DOS manuales: funcional Y técnico, cada uno
+        con su propio PDF. Quedan como borrador para revisar/guardar de a uno."""
         if not self._svc.ai_ready:
             QMessageBox.warning(self, "Importar", "Configurá la IA antes de importar.")
             return
@@ -610,7 +620,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 — formato inesperado / archivo roto
             QMessageBox.critical(
                 self, "No se pudo leer el paquete",
-                f"No pude extraer la estructura del ZIP:\n\n{exc}",
+                f"No pude extraer la estructura del paquete:\n\n{exc}",
             )
             return
 
@@ -620,29 +630,102 @@ class MainWindow(QMainWindow):
                 "Leí el paquete, pero con advertencias:\n\n- " + "\n- ".join(extracted.warnings),
             )
 
-        # Datos del documento: responsable, área (si funcional) y fecha.
-        tipo = self._current.type
-        data = self._ask_document_data(tipo)
-        if data is None:
+        dlg = ImportDialog(
+            self, package_name=extracted.name,
+            categories=[c.label for c in self._svc.list_categories()],
+            author=self._author, area=self._area,
+        )
+        if not dlg.exec():
             return
-        author, area, fecha = data["author"], data["area"], data["fecha"]
-        hint = self._svc.category_hint(self._current.category)  # resuelto en el hilo principal
+        vals = dlg.values()
+
+        # Recordamos autor/área y el título+categoría para crear los manuales después.
+        self._author, self._area = vals["author"], vals["area"]
+        if self._on_set_author:
+            self._on_set_author(self._author)
+        if self._on_set_area:
+            self._on_set_area(self._area)
+        self._import_title = vals["title"]
+        self._import_categoria = vals["categoria"]
+
+        # Contexto de la importación: se genera funcional y técnico en DOS pasos
+        # independientes (cada uno como el individual que ya funciona). Si el 2º
+        # falla, el 1º YA quedó creado: NO es todo-o-nada.
+        self._import_ctx = {
+            "extracted": extracted,
+            "hint": self._svc.category_hint(vals["categoria"]),
+            "author": vals["author"], "area": vals["area"], "fecha": vals["fecha"],
+            "title": vals["title"], "categoria": vals["categoria"],
+        }
+        self._import_func_id = None  # id del funcional una vez creado
+        self._start_import_step(ManualType.FUNCIONAL)
+
+    def _start_import_step(self, tipo: ManualType) -> None:
+        ctx = self._import_ctx
+        label = "funcional" if tipo is ManualType.FUNCIONAL else "técnico"
 
         def call() -> str:
             return self._svc.ai_from_package(
-                extracted=extracted, tipo=tipo, categoria_hint=hint,
-                author=author, area=area, fecha=fecha,
+                extracted=ctx["extracted"], tipo=tipo, categoria_hint=ctx["hint"],
+                author=ctx["author"], area=ctx["area"], fecha=ctx["fecha"],
             )
 
-        self._ai_replace_editor = False  # importar agrega, no reemplaza
         self._ai_btn.setEnabled(False)
         self._import_btn.setEnabled(False)
+        self._complete_btn.setEnabled(False)
         self._ai_busy(True)
-        self._ai_status.setText(f"Importado «{extracted.name}». Redactando el manual con IA…")
+        self._ai_status.setText(f"Redactando manual {label}…")
         self._worker = AIWorker(call)
-        self._worker.finished_ok.connect(self._on_ai_done)
-        self._worker.failed.connect(self._on_ai_error)
+        if tipo is ManualType.FUNCIONAL:
+            self._worker.finished_ok.connect(self._on_import_func_done)
+        else:
+            self._worker.finished_ok.connect(self._on_import_tec_done)
+        self._worker.failed.connect(self._on_import_error)
         self._worker.start()
+
+    def _on_import_func_done(self, markdown: str) -> None:
+        ctx = self._import_ctx
+        m = self._svc.create_manual(
+            f"{ctx['title']} (Funcional)", ManualType.FUNCIONAL, ctx["categoria"]
+        )
+        self._drafts[m.id] = markdown
+        self._import_func_id = m.id
+        self.statusBar().showMessage("✓ Funcional generado. Ahora el técnico…", 6000)
+        self._start_import_step(ManualType.TECNICO)  # encadena el 2º paso
+
+    def _on_import_tec_done(self, markdown: str) -> None:
+        ctx = self._import_ctx
+        m = self._svc.create_manual(
+            f"{ctx['title']} (Técnico)", ManualType.TECNICO, ctx["categoria"]
+        )
+        self._drafts[m.id] = markdown
+        self._ai_busy(False)
+        self._ai_btn.setEnabled(True)
+        self._import_btn.setEnabled(self._svc.extractor_ready)
+        self._complete_btn.setEnabled(self._svc.ai_ready)
+        self._refresh_manual_list(select_id=self._import_func_id)  # abre el funcional
+        self._ai_status.setText("✓ Listo.")
+        self.statusBar().showMessage(
+            "✓ 2 borradores generados (funcional + técnico). Revisá y guardá cada uno.", 10000
+        )
+
+    def _on_import_error(self, message: str) -> None:
+        """Si el 1º (funcional) ya se creó, NO se pierde: avisamos qué falló."""
+        self._ai_busy(False)
+        self._ai_btn.setEnabled(True)
+        self._import_btn.setEnabled(self._svc.extractor_ready)
+        self._complete_btn.setEnabled(self._svc.ai_ready)
+        self._ai_status.setText("")
+        if self._import_func_id is not None:
+            self._refresh_manual_list(select_id=self._import_func_id)
+            QMessageBox.warning(
+                self, "Importación parcial",
+                "El manual FUNCIONAL se generó OK, pero el TÉCNICO falló:\n\n"
+                f"{message}\n\nRevisá y guardá el funcional. Para el técnico, "
+                "reintentá la importación (probá con un modelo obrero si es muy grande).",
+            )
+        else:
+            QMessageBox.critical(self, "Error de IA", message)
 
     def _on_ai_done(self, markdown: str) -> None:
         self._ai_busy(False)

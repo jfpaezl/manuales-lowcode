@@ -149,16 +149,25 @@ code {
   font-family: "IBM Plex Mono", Consolas, monospace;
   font-size: 9.5pt;
   color: var(--navy);
+  overflow-wrap: break-word;   /* un token largo inline no se desborda */
 }
 pre {
   background: var(--navy);
   color: #e8eef5;
   padding: 12px 16px;
   border-radius: 6px;
-  overflow-x: auto;
-  page-break-inside: avoid;
+  font-size: 9pt;
+  line-height: 1.45;
+  /* En PDF no hay scroll: las líneas largas DEBEN envolverse para verse enteras.
+     pre-wrap mantiene los saltos y la indentación del código original. */
+  white-space: pre-wrap;
+  overflow-wrap: break-word;   /* parte tokens/URLs/strings sin espacios */
+  page-break-inside: auto;     /* un bloque largo (ej: módulo VBA) fluye entre páginas */
 }
-pre code { background: none; color: inherit; padding: 0; }
+pre code {
+  background: none; color: inherit; padding: 0;
+  font-size: inherit; white-space: inherit; overflow-wrap: inherit;
+}
 
 table { border-collapse: collapse; width: 100%; margin: 0.4cm 0; }
 th, td { border: 1px solid #d2d6dc; padding: 6px 10px; text-align: left; font-size: 10pt; }

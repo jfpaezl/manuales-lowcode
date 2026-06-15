@@ -6,6 +6,11 @@ con app.setStyleSheet(STYLESHEET) en el composition root.
 """
 from __future__ import annotations
 
+from pathlib import Path
+
+# Ruta (con / para QSS, incluso en Windows) a los assets del tema.
+_ASSETS = (Path(__file__).parent / "assets").as_posix()
+
 # --- Paleta de marca (idéntica a la del PDF) ---
 NAVY = "#15192C"          # institucional — barras, títulos
 ACCENT = "#2F71E5"        # azul acento — botones, selección
@@ -53,7 +58,15 @@ QLineEdit, QPlainTextEdit, QComboBox, QDateEdit {{
 QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QDateEdit:focus {{
   border: 1px solid {ACCENT};
 }}
-QComboBox::drop-down {{ border: none; width: 22px; }}
+/* Flecha de los selectores: al estilizar el combo, Qt deja de dibujar la flecha
+   nativa, así que se la damos nosotros (si no, queda invisible en modo claro). */
+QComboBox::drop-down, QDateEdit::drop-down {{
+  subcontrol-origin: padding; subcontrol-position: center right;
+  width: 24px; border: none;
+}}
+QComboBox::down-arrow, QDateEdit::down-arrow {{
+  image: url("{_ASSETS}/chevron-down.svg"); width: 12px; height: 8px;
+}}
 QComboBox QAbstractItemView {{
   background: {SURFACE}; border: 1px solid {BORDER}; outline: none;
   selection-background-color: {BASE}; selection-color: {ACCENT_DEEP};

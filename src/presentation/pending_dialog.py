@@ -8,6 +8,7 @@ from __future__ import annotations
 from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QFrame,
     QLabel,
     QLineEdit,
     QScrollArea,
@@ -20,21 +21,28 @@ class PendingDialog(QDialog):
     def __init__(self, parent=None, *, questions: list[str]) -> None:
         super().__init__(parent)
         self.setWindowTitle("Completar pendientes")
-        self.setMinimumWidth(540)
-        self.setMinimumHeight(360)
+        self.setMinimumSize(580, 440)
         self._fields: list[QLineEdit] = []
 
+        intro = QLabel(
+            f"Hay {len(questions)} dato(s) por completar. Respondé lo que sepas; "
+            "lo que dejes vacío queda como [COMPLETAR]."
+        )
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color: #52606d; margin-bottom: 4px;")
+
+        # Contenido scrolleable: cada pregunta numerada (negrita) + su campo.
         inner = QWidget()
         col = QVBoxLayout(inner)
-        intro = QLabel("Respondé lo que sepas. Lo que dejes vacío queda como [COMPLETAR].")
-        intro.setWordWrap(True)
-        col.addWidget(intro)
+        col.setSpacing(2)
+        col.setContentsMargins(2, 2, 14, 2)  # margen derecho: aire para la scrollbar
 
-        for q in questions:
-            label = QLabel(q)
+        for i, q in enumerate(questions, 1):
+            label = QLabel(f"{i}.  {q}")
             label.setWordWrap(True)
-            label.setStyleSheet("font-weight: bold; margin-top: 6px;")
+            label.setStyleSheet("font-weight: 600; color: #15192C; margin-top: 12px;")
             field = QLineEdit()
+            field.setPlaceholderText("Tu respuesta… (dejá vacío si no la sabés)")
             self._fields.append(field)
             col.addWidget(label)
             col.addWidget(field)
@@ -42,16 +50,19 @@ class PendingDialog(QDialog):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)  # sin recuadro: más limpio con el tema
         scroll.setWidget(inner)
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(scroll)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Rellenar")
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(intro)        # intro fijo arriba (fuera del scroll)
+        layout.addWidget(scroll, 1)
         layout.addWidget(buttons)
 
     def answers(self) -> list[str]:
