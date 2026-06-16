@@ -69,6 +69,7 @@ class PowerAppsCanvasExtractor(PackageExtractor):
         return ExtractedPackage(
             kind="power-apps-canvas", name=name,
             summary_markdown="\n".join(lines), warnings=warnings,
+            unique_name=name,  # identidad para reconocer la misma app al re-importar
         )
 
     # --- Apertura del .msapp (anidado o crudo) ---------------------------

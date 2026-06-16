@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 class ImportDialog(QDialog):
     def __init__(
         self, parent=None, *, package_name="", categories=None, author="", area="",
+        developer="",
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Importar paquete → manual funcional + técnico")
@@ -41,7 +42,9 @@ class ImportDialog(QDialog):
             self._cat.addItem(label, label)
 
         self._author = QLineEdit(author)
-        self._author.setPlaceholderText("Responsable/autor")
+        self._author.setPlaceholderText("Quién ejecuta/opera la automatización")
+        self._developer = QLineEdit(developer)
+        self._developer.setPlaceholderText("Quién desarrolló el flujo (autor del versionamiento)")
         self._area = QLineEdit(area)
         self._area.setPlaceholderText("Área/sector (para el manual funcional)")
 
@@ -56,6 +59,7 @@ class ImportDialog(QDialog):
         form.addRow("Categoría", self._cat)
         form.addRow("Responsable", self._author)
         form.addRow("Área", self._area)
+        form.addRow("Desarrollador", self._developer)
         form.addRow("Fecha", self._fecha)
 
         buttons = QDialogButtonBox(
@@ -77,6 +81,7 @@ class ImportDialog(QDialog):
             "title": self._title.text().strip(),
             "categoria": self._cat.currentData(),
             "author": self._author.text().strip(),
+            "developer": self._developer.text().strip(),
             "area": self._area.text().strip(),
             "fecha": self._fecha.date().toString("dd/MM/yyyy"),
         }

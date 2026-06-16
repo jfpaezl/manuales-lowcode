@@ -19,6 +19,7 @@ from io import BytesIO
 
 from ...domain.entities import ExtractedPackage
 from ...domain.ports import PackageExtractor, UnsupportedPackageError
+from .dataverse import DataverseExtractor
 from .power_apps import PowerAppsCanvasExtractor
 from .power_automate import PowerAutomateFlowExtractor
 
@@ -33,9 +34,11 @@ class SolutionExtractor(PackageExtractor):
         self,
         flow_extractor: PowerAutomateFlowExtractor | None = None,
         canvas_extractor: PowerAppsCanvasExtractor | None = None,
+        dataverse_extractor: DataverseExtractor | None = None,
     ) -> None:
         self._flows = flow_extractor or PowerAutomateFlowExtractor()
         self._canvas = canvas_extractor or PowerAppsCanvasExtractor()
+        self._dataverse = dataverse_extractor or DataverseExtractor()
 
     def supports(self, names: list[str]) -> bool:
         return any(n.lower().endswith("solution.xml") for n in names)
@@ -52,18 +55,20 @@ class SolutionExtractor(PackageExtractor):
                 raise UnsupportedPackageError(
                     "No encontré solution.xml. ¿Seguro que es una Solution exportada?"
                 )
-            sol_name, version = self._solution_meta(zf, names, filename)
+            sol_name, version, unique_name = self._solution_meta(zf, names, filename)
             warnings: list[str] = []
             flows = self._extract_flows(zf, names, warnings)
             apps = self._extract_apps(zf, names, warnings)
+            dataverse = self._extract_dataverse(zf, names, warnings)
 
+        tables = [c for c in dataverse if c.kind == "dataverse-table"]
         lines = [f"# Solución de Power Platform: {sol_name}"]
         if version:
             lines.append(f"Versión: {version}")
         lines.append("")
         lines.append(
-            f"Contiene {len(flows)} flujo(s) de Power Automate y "
-            f"{len(apps)} app(s) de Power Apps."
+            f"Contiene {len(flows)} flujo(s) de Power Automate, "
+            f"{len(apps)} app(s) de Power Apps y {len(tables)} tabla(s) de Dataverse."
         )
         lines.append("")
 
@@ -77,43 +82,59 @@ class SolutionExtractor(PackageExtractor):
             lines.append(pkg.summary_markdown)
             lines.append("")
             warnings.extend(pkg.warnings)
+        for pkg in dataverse:
+            lines.append(f"===== DATAVERSE: {pkg.name} =====")
+            lines.append(pkg.summary_markdown)
+            lines.append("")
 
-        if not flows and not apps:
-            warnings.append("La solución no tenía flujos ni canvas apps legibles.")
+        if not flows and not apps and not dataverse:
+            warnings.append("La solución no tenía flujos, canvas apps ni tablas legibles.")
 
         return ExtractedPackage(
             kind="power-platform-solution",
             name=sol_name,
             summary_markdown="\n".join(lines),
             warnings=warnings,
-            components=flows + apps,  # para la generación orquestada (obreros)
+            # Orden de componentes: tablas primero (la data es la base), luego
+            # flujos/apps que la usan, y la seguridad. Para los obreros y el diff.
+            components=dataverse + flows + apps,
+            version=version,
+            unique_name=unique_name,  # identidad estable para el seguimiento de cambios
         )
 
     # --- helpers ---------------------------------------------------------
 
     @staticmethod
-    def _solution_meta(zf: zipfile.ZipFile, names: list[str], filename: str) -> tuple[str, str]:
+    def _solution_meta(
+        zf: zipfile.ZipFile, names: list[str], filename: str
+    ) -> tuple[str, str, str]:
+        """Devuelve (nombre legible, versión, unique_name).
+
+        El unique_name es la identidad ESTABLE de Dataverse: no cambia entre
+        versiones de la misma Solution, así que es la clave para reconocer un
+        re-import y poder comparar contra la versión anterior."""
         path = next((n for n in names if n.lower().endswith("solution.xml")), None)
-        sol_name = version = ""
+        sol_name = version = unique_name = ""
         if path is not None:
             try:
                 xml = zf.read(path).decode("utf-8", errors="replace")
             except KeyError:
                 xml = ""
+            m = re.search(r"<UniqueName[^>]*>([^<]+)</UniqueName>", xml)
+            if m:
+                unique_name = m.group(1).strip()
             m = re.search(r'<LocalizedName\s+description="([^"]+)"', xml)
             if m:
                 sol_name = m.group(1)
             if not sol_name:
-                m = re.search(r"<UniqueName[^>]*>([^<]+)</UniqueName>", xml)
-                if m:
-                    sol_name = m.group(1).strip()
+                sol_name = unique_name
             m = re.search(r"<Version[^>]*>([^<]+)</Version>", xml)
             if m:
                 version = m.group(1).strip()
         if not sol_name:
             base = (filename or "").rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
             sol_name = base.rsplit(".", 1)[0] or "Solución sin nombre"
-        return sol_name, version
+        return sol_name, version, unique_name
 
     def _extract_flows(
         self, zf: zipfile.ZipFile, names: list[str], warnings: list[str]
@@ -145,6 +166,21 @@ class SolutionExtractor(PackageExtractor):
             except UnsupportedPackageError as exc:
                 warnings.append(f"No pude leer la app {p.rsplit('/', 1)[-1]}: {exc}")
         return out
+
+    def _extract_dataverse(
+        self, zf: zipfile.ZipFile, names: list[str], warnings: list[str]
+    ) -> list[ExtractedPackage]:
+        """Tablas y roles de Dataverse desde customizations.xml (si lo hay)."""
+        path = next((n for n in names if n.lower().endswith("customizations.xml")), None)
+        if path is None:
+            return []
+        try:
+            xml = zf.read(path).decode("utf-8", errors="replace")
+        except KeyError:
+            return []
+        comps, w = self._dataverse.extract_from_customizations(xml)
+        warnings.extend(w)
+        return comps
 
     @staticmethod
     def _clean_name(path: str) -> str:

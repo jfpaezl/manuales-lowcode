@@ -1,8 +1,11 @@
-"""Diálogo de datos del documento: responsable, área y fecha.
+"""Diálogo de datos del documento: responsable, desarrollador, área y fecha.
 
-El responsable y el área los aporta el USUARIO (la IA no los inventa). La
-fecha viene pre-cargada con hoy, pero es editable. El campo «Área» solo se
-muestra para manuales funcionales (los técnicos no tienen «Datos generales»).
+Los aporta el USUARIO (la IA no los inventa). Dos roles DISTINTOS:
+- «Responsable»: quien EJECUTA/opera la automatización → Datos generales.
+- «Desarrollador»: quien PROGRAMÓ el flujo → autor del Versionamiento.
+La fecha viene pre-cargada con hoy, pero es editable. El campo «Área» solo se
+muestra para manuales funcionales (los técnicos no tienen «Datos generales»);
+el «Desarrollador» se muestra siempre (Versionamiento está en ambos tipos).
 """
 from __future__ import annotations
 
@@ -18,7 +21,8 @@ from PyQt6.QtWidgets import (
 
 class DocumentDataDialog(QDialog):
     def __init__(
-        self, parent=None, *, author: str = "", area: str = "", show_area: bool = True
+        self, parent=None, *, author: str = "", area: str = "", developer: str = "",
+        show_area: bool = True,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Datos del documento")
@@ -26,7 +30,10 @@ class DocumentDataDialog(QDialog):
         self._show_area = show_area
 
         self._author = QLineEdit(author)
-        self._author.setPlaceholderText("Nombre del responsable/autor")
+        self._author.setPlaceholderText("Quién ejecuta/opera la automatización")
+
+        self._developer = QLineEdit(developer)
+        self._developer.setPlaceholderText("Quién desarrolló el flujo")
 
         self._area = QLineEdit(area)
         self._area.setPlaceholderText("Ej: Finanzas, RRHH, Operaciones")
@@ -40,6 +47,7 @@ class DocumentDataDialog(QDialog):
         form.addRow("Responsable", self._author)
         if show_area:
             form.addRow("Área", self._area)
+        form.addRow("Desarrollador", self._developer)
         form.addRow("Fecha", self._fecha)
 
         buttons = QDialogButtonBox(
@@ -52,6 +60,7 @@ class DocumentDataDialog(QDialog):
     def values(self) -> dict:
         return {
             "author": self._author.text().strip(),
+            "developer": self._developer.text().strip(),
             "area": self._area.text().strip() if self._show_area else "",
             "fecha": self._fecha.date().toString("dd/MM/yyyy"),
         }

@@ -23,25 +23,28 @@ from src.infrastructure.extractors.power_apps import PowerAppsCanvasExtractor
 from src.infrastructure.extractors.power_automate import PowerAutomateFlowExtractor
 from src.infrastructure.extractors.solution import SolutionExtractor
 from src.infrastructure.manual_repository import SQLiteManualRepository
+from src.infrastructure.package_snapshot_repository import SQLitePackageSnapshotRepository
 from src.infrastructure.pdf.weasyprint_renderer import WeasyPrintRenderer
 
 CONFIG_PATH = "config.toml"
 
 
-def _worker_provider(api_key: str, base_url: str, worker_model: str):
+def _worker_provider(api_key: str, base_url: str, worker_model: str, timeout: float = 300.0):
     """Crea el proveedor 'obrero' (modelo chico). Mismo endpoint/clave que el
     orquestador, distinto modelo. Si no hay worker_model, no hay obrero."""
     if not (api_key and worker_model):
         return None
     return OpenAICompatibleProvider(
-        AIConfig(api_key=api_key, base_url=base_url, model=worker_model)
+        AIConfig(api_key=api_key, base_url=base_url, model=worker_model, timeout=timeout)
     )
 
 
 def _build_worker(config):
     if not config.ai:
         return None
-    return _worker_provider(config.ai.api_key, config.ai.base_url, config.worker_model)
+    return _worker_provider(
+        config.ai.api_key, config.ai.base_url, config.worker_model, config.ai.timeout
+    )
 
 
 def main() -> int:
@@ -54,6 +57,7 @@ def main() -> int:
     init_db(conn)
     repo = SQLiteManualRepository(conn)
     categories = SQLiteCategoryRepository(conn)
+    snapshots = SQLitePackageSnapshotRepository(conn)
     renderer = WeasyPrintRenderer(
         brand=config.brand_name, tagline=config.brand_tagline, logo_path=config.brand_logo
     )
@@ -71,7 +75,7 @@ def main() -> int:
     # --- Servicio (el caso de uso) ---
     service = ManualService(
         repo, renderer=renderer, ai=ai, categories=categories, extractor=extractor,
-        worker_ai=worker_ai,
+        worker_ai=worker_ai, snapshots=snapshots,
     )
 
     # --- Estado de config en memoria (para no pisar campos al guardar) ---
@@ -81,7 +85,9 @@ def main() -> int:
         "model": config.ai.model if config.ai else "glm-5.1",
         "author": config.author,
         "area": config.area,
+        "developer": config.developer,
         "worker_model": config.worker_model,
+        "timeout": config.ai.timeout if config.ai else 300.0,
         "brand_name": config.brand_name,
         "brand_tagline": config.brand_tagline,
         "brand_logo": config.brand_logo,
@@ -96,7 +102,9 @@ def main() -> int:
             model=state["model"],
             author=state["author"],
             area=state["area"],
+            developer=state["developer"],
             worker_model=state["worker_model"],
+            timeout=state["timeout"],
             brand_name=state["brand_name"],
             brand_tagline=state["brand_tagline"],
             brand_logo=state["brand_logo"],
@@ -104,9 +112,11 @@ def main() -> int:
 
     # --- Callback: configurar IA en caliente desde la UI ---
     def configure_ai(api_key: str, base_url: str, model: str, worker_model: str = "") -> None:
-        provider = OpenAICompatibleProvider(AIConfig(api_key=api_key, base_url=base_url, model=model))
+        provider = OpenAICompatibleProvider(
+            AIConfig(api_key=api_key, base_url=base_url, model=model, timeout=state["timeout"])
+        )
         service.set_ai(provider)  # se activa al instante, sin reiniciar
-        service.set_worker_ai(_worker_provider(api_key, base_url, worker_model))
+        service.set_worker_ai(_worker_provider(api_key, base_url, worker_model, state["timeout"]))
         state.update(api_key=api_key, base_url=base_url, model=model, worker_model=worker_model)
         _persist()
 
@@ -122,6 +132,11 @@ def main() -> int:
     # --- Callback: recordar el área (para los Datos generales) ---
     def set_area(area: str) -> None:
         state["area"] = area
+        _persist()
+
+    # --- Callback: recordar el desarrollador (autor del versionamiento) ---
+    def set_developer(developer: str) -> None:
+        state["developer"] = developer
         _persist()
 
     # --- Callback: identidad del documento (marca/lema/logo del PDF) ---
@@ -155,6 +170,8 @@ def main() -> int:
         on_set_author=set_author,
         initial_area=config.area,
         on_set_area=set_area,
+        initial_developer=config.developer,
+        on_set_developer=set_developer,
         list_models=list_models,
         initial_identity={
             "brand": config.brand_name,

@@ -37,6 +37,15 @@ CREATE TABLE IF NOT EXISTS manual_versions (
     UNIQUE (manual_id, version)
 );
 
+CREATE TABLE IF NOT EXISTS package_snapshots (
+    unique_name     TEXT    PRIMARY KEY,   -- identidad estable del paquete (Dataverse)
+    version         TEXT    NOT NULL DEFAULT '',
+    components_json TEXT    NOT NULL DEFAULT '[]',  -- [{name, kind, fingerprint}]
+    manual_func_id  INTEGER REFERENCES manuals(id) ON DELETE SET NULL,
+    manual_tec_id   INTEGER REFERENCES manuals(id) ON DELETE SET NULL,
+    updated_at      TEXT    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS ai_logs (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     manual_id  INTEGER REFERENCES manuals(id) ON DELETE SET NULL,
@@ -51,12 +60,31 @@ CREATE INDEX IF NOT EXISTS idx_versions_manual ON manual_versions(manual_id);
 """
 
 # Categorías por defecto: (etiqueta, ai_hint para el prompt de la IA).
+# El ai_hint, además de describirle la tecnología a la IA, es lo que rutea al
+# knowledge pack (knowledge_for_category matchea palabras clave del hint), así que
+# debe contener el término de la tecnología (power apps / power automate / dataverse / vba).
 _DEFAULT_CATEGORIES = [
-    ("Power Apps", "Power Apps (Power Platform)"),
+    ("Solution", "una solución completa de Power Platform (Power Apps, Power Automate, "
+                 "Dataverse e integraciones)"),
+    ("Power Apps", "Power Apps (Power Platform): canvas apps"),
+    ("Power Automate", "flujos de Power Automate (Power Platform)"),
+    ("Dataverse", "tablas de Dataverse (Power Platform)"),
     ("Macros", "macros (Excel/VBA/Office)"),
     ("Python", "scripts de Python"),
     ("Low-Code", "una solución low-code"),
     ("Otro", "una automatización"),
+]
+
+# Categorías ligadas a un knowledge pack: GARANTIZAMOS que existan, también en DBs
+# viejas (el seed normal solo corre con la tabla vacía). Sin estas, documentar un
+# flujo o una tabla "desde un tema" no rutea al pack correcto.
+_KNOWLEDGE_CATEGORIES = [
+    ("Solution", "una solución completa de Power Platform (Power Apps, Power Automate, "
+                 "Dataverse e integraciones)"),
+    ("Power Apps", "Power Apps (Power Platform): canvas apps"),
+    ("Power Automate", "flujos de Power Automate (Power Platform)"),
+    ("Dataverse", "tablas de Dataverse (Power Platform)"),
+    ("Macros", "macros (Excel/VBA/Office)"),
 ]
 
 # Migración: viejos valores de Enum -> nuevas etiquetas (para datos preexistentes).
@@ -82,6 +110,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     _seed_categories(conn)
     _migrate_legacy_categories(conn)
+    _seed_knowledge_categories(conn)
     conn.commit()
 
 
@@ -98,3 +127,15 @@ def _migrate_legacy_categories(conn: sqlite3.Connection) -> None:
     """Reapunta manuales con valores viejos de Enum a las nuevas etiquetas."""
     for old, new in _LEGACY_CATEGORY_MAP.items():
         conn.execute("UPDATE manuals SET category = ? WHERE category = ?", (new, old))
+
+
+def _seed_knowledge_categories(conn: sqlite3.Connection) -> None:
+    """Garantiza que existan las categorías ligadas a un knowledge pack (sin pisar
+    las que ya están). Corre siempre: si faltan —DB vieja o el usuario las borró—,
+    se agregan, para que el ruteo categoría→pack funcione."""
+    for label, hint in _KNOWLEDGE_CATEGORIES:
+        conn.execute(
+            "INSERT INTO categories (label, ai_hint) SELECT ?, ? "
+            "WHERE NOT EXISTS (SELECT 1 FROM categories WHERE label = ?)",
+            (label, hint, label),
+        )

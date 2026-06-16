@@ -12,8 +12,9 @@ from .infrastructure.ai.openai_compatible_provider import AIConfig
 class AppConfig:
     db_path: str
     ai: AIConfig | None  # None si no configuraste IA todavía
-    author: str = ""     # nombre del autor/responsable, recordado para el documento
+    author: str = ""     # responsable (quien ejecuta), recordado para Datos generales
     area: str = ""       # área/sector, recordada para los Datos generales
+    developer: str = ""  # desarrollador (quien programó), recordado para el Versionamiento
     worker_model: str = ""  # modelo "obrero" (chico) para la generación orquestada
     # Identidad de marca que aparece en la portada del PDF.
     brand_name: str = ""     # nombre de la empresa/marca
@@ -34,7 +35,9 @@ def save_config(
     model: str,
     author: str = "",
     area: str = "",
+    developer: str = "",
     worker_model: str = "",
+    timeout: float = 300.0,
     brand_name: str = "",
     brand_tagline: str = "",
     brand_logo: str = "",
@@ -47,12 +50,14 @@ def save_config(
         f'api_key  = "{_toml_escape(api_key)}"\n'
         f'base_url = "{_toml_escape(base_url)}"\n'
         f'model    = "{_toml_escape(model)}"\n'
-        f'worker_model = "{_toml_escape(worker_model)}"\n\n'
+        f'worker_model = "{_toml_escape(worker_model)}"\n'
+        f"timeout = {float(timeout)}\n\n"
         "[storage]\n"
         f'db_path = "{_toml_escape(db_path)}"\n\n'
         "[user]\n"
         f'name = "{_toml_escape(author)}"\n'
-        f'area = "{_toml_escape(area)}"\n\n'
+        f'area = "{_toml_escape(area)}"\n'
+        f'developer = "{_toml_escape(developer)}"\n\n'
         "[brand]\n"
         f'name    = "{_toml_escape(brand_name)}"\n'
         f'tagline = "{_toml_escape(brand_tagline)}"\n'
@@ -74,6 +79,7 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
     user = data.get("user", {})
     author = user.get("name", "").strip()
     area = user.get("area", "").strip()
+    developer = user.get("developer", "").strip()
 
     brand = data.get("brand", {})
     brand_name = brand.get("name", "").strip()
@@ -83,15 +89,18 @@ def load_config(path: str | Path = "config.toml") -> AppConfig:
     ai_data = data.get("ai", {})
     api_key = ai_data.get("api_key", "").strip()
     worker_model = ai_data.get("worker_model", "").strip()
+    timeout = float(ai_data.get("timeout", 300.0))
     ai_cfg: AIConfig | None = None
     if api_key and api_key != "tu-api-key-aca":
         ai_cfg = AIConfig(
             api_key=api_key,
             base_url=ai_data.get("base_url", "https://opencode.ai/zen/go/v1"),
             model=ai_data.get("model", "glm-5.1"),
+            timeout=timeout,
         )
 
     return AppConfig(
-        db_path=db_path, ai=ai_cfg, author=author, area=area, worker_model=worker_model,
+        db_path=db_path, ai=ai_cfg, author=author, area=area, developer=developer,
+        worker_model=worker_model,
         brand_name=brand_name, brand_tagline=brand_tagline, brand_logo=brand_logo,
     )

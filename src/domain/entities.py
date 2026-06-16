@@ -63,6 +63,28 @@ class ExtractedPackage:
     # Subcomponentes (una Solution trae varios flujos/apps). Vacío = es atómico.
     # Permite repartir el trabajo entre "obreros" en la generación orquestada.
     components: list["ExtractedPackage"] = field(default_factory=list)
+    # Versión del paquete (ej: "1.0.0.1" de una Solution). "" si no aplica/no se lee.
+    version: str = ""
+    # Identidad ESTABLE para reconocer el mismo paquete al re-importar (ej: el
+    # UniqueName de Dataverse). Es la clave del seguimiento de cambios entre
+    # versiones. Si el extractor no la setea, queda "".
+    unique_name: str = ""
+
+    @property
+    def fingerprint(self) -> str:
+        """Huella del contenido extraído. Misma estructura → misma huella; si el
+        flujo/componente cambió, la huella cambia. Es lo que permite detectar un
+        componente «modificado» entre dos importaciones."""
+        return hashlib.sha256(self.summary_markdown.encode("utf-8")).hexdigest()
+
+    @property
+    def diff_units(self) -> list["ExtractedPackage"]:
+        """Unidades comparables para el seguimiento de cambios.
+
+        Una Solution se compara por sus componentes (flujos/apps). Un paquete
+        atómico (flujo suelto, macro) no tiene sub-componentes: la unidad es el
+        paquete entero (degrada con elegancia a «modificado / versión nueva»)."""
+        return self.components if self.components else [self]
 
 
 @dataclass

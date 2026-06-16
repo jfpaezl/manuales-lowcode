@@ -76,6 +76,14 @@ def test_extrae_nombre_y_version_de_la_solucion():
     assert "1.0.0.1" in r.summary_markdown
 
 
+def test_version_y_unique_name_quedan_como_datos_estructurados():
+    # Para el seguimiento de cambios: la versión y la identidad estable NO pueden
+    # vivir solo en el texto; deben ser campos del paquete.
+    r = SolutionExtractor().extract(_solution_zip(), "sol.zip")
+    assert r.version == "1.0.0.1"
+    assert r.unique_name == "CentralizadorFondosPer"
+
+
 def test_incluye_flujos_y_apps_delegando_a_los_extractores():
     r = SolutionExtractor().extract(_solution_zip(flows=2, apps=1), "sol.zip")
     md = r.summary_markdown
@@ -95,6 +103,36 @@ def test_nombre_de_flujo_sin_guid():
     md = SolutionExtractor().extract(_solution_zip(flows=1, apps=0), "sol.zip").summary_markdown
     assert "Flujo0" in md
     assert "0BFDE794" not in md  # el GUID del archivo no aparece
+
+
+_CUSTOMIZATIONS_DV = """<ImportExportXml>
+  <Entities><Entity>
+    <Name LocalizedName="Cuenta de fondo">new_cuentafondo</Name>
+    <EntityInfo><entity Name="new_cuentafondo"><attributes>
+      <attribute PhysicalName="new_nombre"><Type>nvarchar</Type>
+        <LogicalName>new_nombre</LogicalName><RequiredLevel>required</RequiredLevel>
+        <displaynames><displayname description="Nombre" /></displaynames></attribute>
+    </attributes></entity></EntityInfo>
+  </Entity></Entities>
+  <Roles><Role><RoleName LocalizedName="Operador" /></Role></Roles>
+</ImportExportXml>"""
+
+
+def test_integra_dataverse_como_componentes_de_la_solucion():
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("solution.xml", _SOLUTION_XML)
+        zf.writestr("customizations.xml", _CUSTOMIZATIONS_DV)
+        zf.writestr("Workflows/F0-0BFDE794-DDE4-EF11-9341-0022482A1116.json", _flow_json())
+    r = SolutionExtractor().extract(buf.getvalue(), "sol.zip")
+    kinds = [c.kind for c in r.components]
+    assert "dataverse-table" in kinds
+    assert "dataverse-security" in kinds
+    assert "power-automate-flow" in kinds
+    # La tabla aparece en el resumen con su nombre y una columna
+    assert "Cuenta de fondo" in r.summary_markdown
+    assert "new_nombre" in r.summary_markdown
+    assert "1 tabla(s) de Dataverse" in r.summary_markdown
 
 
 def test_solucion_vacia_avisa():

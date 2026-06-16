@@ -223,6 +223,91 @@ def test_ai_from_package_funcional_inyecta_datos_generales(service_factory):
     assert "Fecha | 15/03/2031" in ai.last_user
 
 
+def test_ai_from_package_separa_responsable_de_desarrollador(service_factory):
+    # Responsable (ejecuta) → Datos generales; Desarrollador (programa) → Versionamiento.
+    pkg = ExtractedPackage(kind="power-automate-flow", name="Flujo X",
+                           summary_markdown="# Flujo X\n- Paso")
+    ai = FakeAI()
+    svc = service_factory(ai=ai, extractor=FakeExtractor(pkg))
+    svc.ai_from_package(
+        extracted=pkg, tipo=ManualType.FUNCIONAL, categoria_hint="Power Automate",
+        author="Ana", area="RRHH", fecha="15/03/2031", developer="Beto",
+    )
+    assert "Responsable | Ana" in ai.last_user
+    # El autor de la v1.0 es el desarrollador, no el responsable
+    assert "versión 1.0 | 15/03/2031 | Beto | Versión inicial" in ai.last_user
+
+
+def test_diff_for_primera_importacion_no_tiene_cambios(service_factory):
+    from src.infrastructure.package_snapshot_repository import (
+        SQLitePackageSnapshotRepository,
+    )
+    from src.infrastructure.db import connect, init_db
+
+    conn = connect(":memory:")
+    init_db(conn)
+    svc = ManualService(
+        SQLiteManualRepository(conn),
+        categories=SQLiteCategoryRepository(conn),
+        snapshots=SQLitePackageSnapshotRepository(conn),
+    )
+    sol = ExtractedPackage(
+        kind="power-platform-solution", name="Sol", summary_markdown="# Sol",
+        unique_name="SolX", version="1.0.0.1",
+        components=[ExtractedPackage(kind="power-automate-flow", name="F1", summary_markdown="# a")],
+    )
+    diff = svc.diff_for(sol)
+    assert diff.is_first_import is True
+    assert diff.has_changes is False
+
+
+def test_diff_for_detecta_cambios_tras_guardar_snapshot(service_factory):
+    from src.infrastructure.package_snapshot_repository import (
+        SQLitePackageSnapshotRepository,
+    )
+    from src.infrastructure.db import connect, init_db
+
+    conn = connect(":memory:")
+    init_db(conn)
+    svc = ManualService(
+        SQLiteManualRepository(conn),
+        categories=SQLiteCategoryRepository(conn),
+        snapshots=SQLitePackageSnapshotRepository(conn),
+    )
+
+    def sol(comps, version):
+        return ExtractedPackage(
+            kind="power-platform-solution", name="Sol", summary_markdown="# Sol",
+            unique_name="SolX", version=version,
+            components=[ExtractedPackage(kind="power-automate-flow", name=n, summary_markdown=md)
+                        for n, md in comps],
+        )
+
+    v1 = sol([("F1", "# a"), ("F2", "# b")], "1.0.0.1")
+    svc.save_snapshot(v1)
+    # Nueva versión: F1 igual, F2 cambió, F2 fuera y entra F3.
+    v2 = sol([("F1", "# a"), ("F3", "# c")], "1.0.0.2")
+    diff = svc.diff_for(v2)
+    assert diff.deprecated == ["F2"]
+    assert diff.added == ["F3"]
+    assert diff.version_from == "1.0.0.1" and diff.version_to == "1.0.0.2"
+
+
+def test_ai_from_package_pasa_version_y_diff_al_prompt(service_factory):
+    from src.domain.change_tracking import DiffResult
+
+    pkg = ExtractedPackage(kind="power-automate-flow", name="MiFlujo",
+                           summary_markdown="# F", unique_name="MiFlujo", version="2.0")
+    ai = FakeAI()
+    svc = service_factory(ai=ai, extractor=FakeExtractor(pkg))
+    diff = DiffResult(version_from="1.0", version_to="2.0", modified=["MiFlujo"])
+    svc.ai_from_package(
+        extracted=pkg, tipo=ManualType.TECNICO, categoria_hint="Power Automate", diff=diff,
+    )
+    assert "2.0" in ai.last_user
+    assert "Cambios respecto a la versión anterior" in ai.last_user
+
+
 def test_ai_document_code_incluye_el_codigo(service_factory):
     ai = FakeAI()
     svc = service_factory(ai=ai)
@@ -333,8 +418,8 @@ def test_ai_from_package_atomico_una_sola_llamada(service_factory):
     assert worker.calls == []  # el obrero no se usa en paquetes atómicos
 
 
-def test_ai_from_package_solution_orquesta_con_obrero(service_factory):
-    # Solution con 2 componentes → obrero redacta cada uno, orquestador integra.
+def test_ai_from_package_tecnico_orquesta_con_obrero(service_factory):
+    # Manual TÉCNICO (el pesado): el OBRERO redacta cada componente, orquestador integra.
     comp1 = ExtractedPackage(kind="power-automate-flow", name="Flujo1",
                              summary_markdown="# Flujo1")
     comp2 = ExtractedPackage(kind="power-apps-canvas", name="App1",
@@ -348,7 +433,7 @@ def test_ai_from_package_solution_orquesta_con_obrero(service_factory):
     svc = service_factory(ai=orchestrator, worker_ai=worker)
 
     out = svc.ai_from_package(
-        extracted=solution, tipo=ManualType.FUNCIONAL, categoria_hint="Power Platform",
+        extracted=solution, tipo=ManualType.TECNICO, categoria_hint="Power Platform",
         author="Ana", area="RRHH",
     )
     # El OBRERO redactó una vez por componente (el grueso, modelo chico)
@@ -361,6 +446,28 @@ def test_ai_from_package_solution_orquesta_con_obrero(service_factory):
     assert out == "MANUAL INTEGRADO"
 
 
+def test_funcional_usa_el_orquestador_para_las_secciones_no_el_obrero(service_factory):
+    # El FUNCIONAL (breve) usa el ORQUESTADOR para redactar cada componente: el
+    # obrero no se usa (se colgaba y las secciones son cortas → barato y estable).
+    comp1 = ExtractedPackage(kind="power-automate-flow", name="Flujo1", summary_markdown="# F1")
+    comp2 = ExtractedPackage(kind="power-apps-canvas", name="App1", summary_markdown="# A1")
+    solution = ExtractedPackage(
+        kind="power-platform-solution", name="MiSolución",
+        summary_markdown="# MiSolución", components=[comp1, comp2],
+    )
+    orchestrator = RecordingAI("INTEGRADO")
+    worker = RecordingAI("sec obrero")
+    svc = service_factory(ai=orchestrator, worker_ai=worker)
+
+    svc.ai_from_package(
+        extracted=solution, tipo=ManualType.FUNCIONAL, categoria_hint="Power Platform",
+    )
+    # El obrero NO se usa para el funcional
+    assert worker.calls == []
+    # El orquestador hace las 2 secciones + la integración = 3 llamadas
+    assert len(orchestrator.calls) == 3
+
+
 def test_orquesta_sin_obrero_usa_el_orquestador_para_todo(service_factory):
     # Sin worker_ai configurado → degrada: el orquestador hace todo.
     comp = ExtractedPackage(kind="power-automate-flow", name="F", summary_markdown="# F")
@@ -371,6 +478,121 @@ def test_orquesta_sin_obrero_usa_el_orquestador_para_todo(service_factory):
     svc.ai_from_package(extracted=solution, tipo=ManualType.TECNICO, categoria_hint="PP")
     # 2 secciones + 1 integración = 3 llamadas, todas al orquestador
     assert len(orchestrator.calls) == 3
+
+
+def test_orquesta_reporta_progreso_por_componente(service_factory):
+    comp1 = ExtractedPackage(kind="power-automate-flow", name="Flujo1", summary_markdown="# F1")
+    comp2 = ExtractedPackage(kind="power-apps-canvas", name="App1", summary_markdown="# A1")
+    solution = ExtractedPackage(
+        kind="power-platform-solution", name="Sol", summary_markdown="# Sol",
+        components=[comp1, comp2],
+    )
+    svc = service_factory(ai=RecordingAI("INTEGRADO"), worker_ai=RecordingAI("sec"))
+    msgs: list[str] = []
+    svc.ai_from_package(
+        extracted=solution, tipo=ManualType.TECNICO, categoria_hint="PP",
+        progress=msgs.append,
+    )
+    # Reporta cada componente (con índice/total y nombre) y la integración final.
+    assert any("1/2" in m and "Flujo1" in m for m in msgs)
+    assert any("2/2" in m and "App1" in m for m in msgs)
+    assert any("integr" in m.lower() for m in msgs)
+
+
+def test_obrero_401_cae_al_modelo_principal_y_completa(service_factory):
+    # El obrero da 401 (no autorizado) → se usa el modelo principal para las
+    # secciones, así el manual se genera COMPLETO igual (no cascarón).
+    from src.domain.ports import AIAuthError
+
+    class AuthFailWorker(AIProvider):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, system_prompt: str, user_prompt: str) -> str:
+            self.calls += 1
+            raise AIAuthError("401")
+
+    comp1 = ExtractedPackage(kind="power-automate-flow", name="F1", summary_markdown="# F1")
+    comp2 = ExtractedPackage(kind="power-automate-flow", name="F2", summary_markdown="# F2")
+    solution = ExtractedPackage(
+        kind="power-platform-solution", name="Sol", summary_markdown="# Sol",
+        components=[comp1, comp2],
+    )
+    orchestrator = RecordingAI("INTEGRADO")
+    worker = AuthFailWorker()
+    svc = service_factory(ai=orchestrator, worker_ai=worker)
+    msgs: list[str] = []
+    out = svc.ai_from_package(
+        extracted=solution, tipo=ManualType.TECNICO, categoria_hint="PP", progress=msgs.append,
+    )
+    assert out == "INTEGRADO"
+    # El obrero intentó UNA vez (la 1ra), falló auth → el resto va al principal.
+    assert worker.calls == 1
+    # El principal redactó las 2 secciones + integró = 3 llamadas.
+    assert len(orchestrator.calls) == 3
+    # Avisó del fallback.
+    assert any("obrero" in m.lower() and "401" in m for m in msgs)
+
+
+def test_obrero_y_principal_401_aborta(service_factory):
+    from src.domain.ports import AIAuthError
+
+    class AuthFail(AIProvider):
+        def complete(self, system_prompt: str, user_prompt: str) -> str:
+            raise AIAuthError("401 no autorizado")
+
+    comp = ExtractedPackage(kind="power-automate-flow", name="F", summary_markdown="# F")
+    solution = ExtractedPackage(kind="power-platform-solution", name="S",
+                                summary_markdown="# S", components=[comp, comp])
+    svc = service_factory(ai=AuthFail(), worker_ai=AuthFail())
+    with pytest.raises(AIAuthError):
+        svc.ai_from_package(extracted=solution, tipo=ManualType.TECNICO, categoria_hint="PP")
+
+
+def test_orquesta_integracion_que_falla_no_pierde_lo_redactado(service_factory):
+    class FailingOrch(AIProvider):
+        def complete(self, system_prompt: str, user_prompt: str) -> str:
+            raise RuntimeError("timeout en la integración")
+
+    comp1 = ExtractedPackage(kind="power-automate-flow", name="F1", summary_markdown="# F1")
+    comp2 = ExtractedPackage(kind="power-automate-flow", name="F2", summary_markdown="# F2")
+    solution = ExtractedPackage(
+        kind="power-platform-solution", name="Sol", summary_markdown="# Sol",
+        components=[comp1, comp2],
+    )
+    worker = RecordingAI("## Sección redactada\ncontenido del obrero")
+    svc = service_factory(ai=FailingOrch(), worker_ai=worker)
+    out = svc.ai_from_package(extracted=solution, tipo=ManualType.TECNICO, categoria_hint="PP")
+    # No explota: devuelve lo redactado por los obreros (modo degradado) + un aviso.
+    assert "contenido del obrero" in out
+    assert "[COMPLETAR]" in out
+
+
+def test_orquesta_resiliente_un_componente_que_falla_no_mata_todo(service_factory):
+    class FlakyWorker(AIProvider):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, system_prompt: str, user_prompt: str) -> str:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("timeout simulado")
+            return "sección ok"
+
+    comp1 = ExtractedPackage(kind="power-automate-flow", name="Flujo1", summary_markdown="# F1")
+    comp2 = ExtractedPackage(kind="power-automate-flow", name="Flujo2", summary_markdown="# F2")
+    solution = ExtractedPackage(
+        kind="power-platform-solution", name="Sol", summary_markdown="# Sol",
+        components=[comp1, comp2],
+    )
+    orchestrator = RecordingAI("INTEGRADO")
+    svc = service_factory(ai=orchestrator, worker_ai=FlakyWorker())
+    out = svc.ai_from_package(extracted=solution, tipo=ManualType.TECNICO, categoria_hint="PP")
+    # NO explota: integra igual. El componente que falló entra como placeholder.
+    assert out == "INTEGRADO"
+    assert len(orchestrator.calls) == 1
+    integ = orchestrator.calls[0][1]
+    assert "Flujo1" in integ and "[COMPLETAR]" in integ
 
 
 def test_ai_sin_proveedor_falla_claro(service_factory):
@@ -394,13 +616,36 @@ def test_categorias_por_defecto_sembradas(service_factory):
     labels = [c.label for c in svc.list_categories()]
     assert "Power Apps" in labels
     assert "Macros" in labels
+    # Las tecnologías con knowledge pack tienen su categoría (para rutear bien).
+    assert "Power Automate" in labels
+    assert "Dataverse" in labels
+    assert "Solution" in labels  # categoría que abarca toda una Solution
+
+
+def test_categorias_de_knowledge_se_migran_en_db_vieja():
+    # Simula una DB vieja (sin Power Automate/Dataverse) y verifica que init_db las suma.
+    from src.infrastructure.db import connect, init_db
+
+    conn = connect(":memory:")
+    conn.execute(
+        "CREATE TABLE categories (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "label TEXT NOT NULL UNIQUE, ai_hint TEXT NOT NULL DEFAULT '')"
+    )
+    conn.execute("INSERT INTO categories (label, ai_hint) VALUES ('Vieja', 'algo')")
+    conn.commit()
+    init_db(conn)  # no está vacía → no siembra defaults, pero SÍ migra las de knowledge
+    labels = [r["label"] for r in conn.execute("SELECT label FROM categories").fetchall()]
+    assert "Power Automate" in labels
+    assert "Dataverse" in labels
+    assert "Solution" in labels
+    assert "Vieja" in labels  # no pisa lo que ya había
 
 
 def test_add_category(service_factory):
     svc = service_factory()
-    svc.add_category("Power Automate", "flujos de Power Automate")
+    svc.add_category("SharePoint", "listas y bibliotecas de SharePoint")
     labels = [c.label for c in svc.list_categories()]
-    assert "Power Automate" in labels
+    assert "SharePoint" in labels
 
 
 def test_add_category_duplicada_falla(service_factory):

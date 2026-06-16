@@ -66,3 +66,39 @@ def test_config_guarda_y_lee_identidad(tmp_path):
     assert c.brand_name == "ACME S.A."
     assert c.brand_tagline == "Calidad"
     assert c.brand_logo == "/ruta/logo.png"
+
+
+def test_config_guarda_y_lee_timeout(tmp_path):
+    # El timeout de la IA es configurable (modelos lentos como minimax necesitan más).
+    from src.config import load_config, save_config
+
+    p = tmp_path / "config.toml"
+    save_config(p, db_path="x.db", api_key="k", base_url="u", model="m", timeout=300.0)
+    c = load_config(p)
+    assert c.ai is not None
+    assert c.ai.timeout == 300.0
+
+
+def test_config_timeout_default_cuando_no_esta(tmp_path):
+    from src.config import load_config, save_config
+
+    p = tmp_path / "config.toml"
+    save_config(p, db_path="x.db", api_key="k", base_url="u", model="m")  # sin timeout
+    c = load_config(p)
+    assert c.ai.timeout == 300.0  # default razonable para modelos lentos
+
+
+def test_config_guarda_y_lee_responsable_y_desarrollador(tmp_path):
+    # Responsable (ejecuta) y Desarrollador (programa) son campos distintos y
+    # ambos se recuerdan entre sesiones.
+    from src.config import load_config, save_config
+
+    p = tmp_path / "config.toml"
+    save_config(
+        p, db_path="x.db", api_key="k", base_url="u", model="m",
+        author="Ana Responsable", area="Finanzas", developer="Beto Desarrollador",
+    )
+    c = load_config(p)
+    assert c.author == "Ana Responsable"
+    assert c.area == "Finanzas"
+    assert c.developer == "Beto Desarrollador"

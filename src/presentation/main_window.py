@@ -30,11 +30,10 @@ from collections.abc import Callable
 
 from ..application.manual_service import ManualService
 from ..domain.entities import Manual, ManualType
-from .ai_worker import AIWorker
+from .ai_worker import AIWorker, TaskWorker
 from .categories_dialog import CategoriesDialog
 from .document_data_dialog import DocumentDataDialog
 from .identity_dialog import IdentityDialog
-from .import_dialog import ImportDialog
 from .new_manual_dialog import NewManualDialog
 from .pending_dialog import PendingDialog
 from .settings_dialog import SettingsDialog
@@ -66,6 +65,8 @@ class MainWindow(QMainWindow):
         on_set_author: Callable[[str], None] | None = None,
         initial_area: str = "",
         on_set_area: Callable[[str], None] | None = None,
+        initial_developer: str = "",
+        on_set_developer: Callable[[str], None] | None = None,
         list_models: Callable[[str, str], list[str]] | None = None,
         initial_identity: dict | None = None,
         on_set_identity: Callable[[str, str, str], None] | None = None,
@@ -79,6 +80,8 @@ class MainWindow(QMainWindow):
         self._on_set_author = on_set_author
         self._area = initial_area
         self._on_set_area = on_set_area
+        self._developer = initial_developer
+        self._on_set_developer = on_set_developer
         self._identity = initial_identity or {}
         self._on_set_identity = on_set_identity
         self._current: Manual | None = None
@@ -93,6 +96,9 @@ class MainWindow(QMainWindow):
         # Estado de la importación dual en curso (funcional → técnico, en 2 pasos).
         self._import_ctx: dict = {}
         self._import_func_id: int | None = None
+        self._import_tec_id: int | None = None
+        # Datos del diálogo "Crear manual" mientras se extrae el paquete (fuente .zip).
+        self._pending_create: dict = {}
 
         self.setWindowTitle("Manuales Low-Code")
         self.resize(1180, 760)
@@ -114,7 +120,7 @@ class MainWindow(QMainWindow):
         self._update_ai_placeholder()
 
     def _setup_shortcuts(self) -> None:
-        QShortcut(QKeySequence.StandardKey.New, self, activated=self._on_new_manual)   # Ctrl+N
+        QShortcut(QKeySequence.StandardKey.New, self, activated=lambda: self._open_create("topic"))  # Ctrl+N
         QShortcut(QKeySequence.StandardKey.Save, self, activated=self._on_save_version)  # Ctrl+S
         QShortcut(QKeySequence("F2"), self, activated=self._on_rename_manual)
         # Eliminar SOLO con la lista enfocada: no pisa el Supr al editar texto.
@@ -127,8 +133,10 @@ class MainWindow(QMainWindow):
         self._ai_input.setPlaceholderText(_AI_PLACEHOLDERS.get(mode, "…"))
 
     def _ai_busy(self, busy: bool) -> None:
-        """Muestra/oculta la barra de progreso indeterminada de la IA."""
+        """Muestra/oculta la barra de progreso indeterminada de la IA y bloquea el
+        botón de crear (no se arranca otra generación mientras hay una en curso)."""
         self._progress.setVisible(busy)
+        self._new_btn.setEnabled(not busy)
 
     def _build_menu(self) -> None:
         menu = self.menuBar().addMenu("⚙ Configuración")
@@ -181,8 +189,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._list)
 
         row = QHBoxLayout()
-        btn_new = QPushButton("➕ Nuevo")
-        btn_new.clicked.connect(self._on_new_manual)
+        self._new_btn = QPushButton("✨ Nuevo (IA)")
+        self._new_btn.setToolTip("Genera funcional + técnico desde un tema o un paquete (.zip)")
+        self._new_btn.clicked.connect(lambda: self._open_create("topic"))
+        btn_new = self._new_btn
         btn_rename = QPushButton("✏ Renombrar")
         btn_rename.clicked.connect(self._on_rename_manual)
         btn_del = QPushButton("🗑 Eliminar")
@@ -198,6 +208,8 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._build_edit_tab(), "✏ Editor")
         self._tabs.addTab(self._build_preview_tab(), "📄 Vista PDF")
         self._tabs.addTab(self._build_versions_tab(), "🕑 Versiones")
+        self._activity_tab = self._build_activity_tab()
+        self._tabs.addTab(self._activity_tab, "🔎 Actividad IA")
         return self._tabs
 
     def _build_edit_tab(self) -> QWidget:
@@ -249,8 +261,8 @@ class MainWindow(QMainWindow):
         # Importar desde un paquete exportado (ej: flujo de Power Automate).
         # Extrae la estructura del ZIP y la manda a la IA para redactar el manual.
         pkg_row = QHBoxLayout()
-        self._import_btn = QPushButton("📦 Importar ZIP (Power Automate / Power Apps)…")
-        self._import_btn.clicked.connect(self._on_import_package)
+        self._import_btn = QPushButton("📦 Crear desde ZIP (Power Automate / Power Apps)…")
+        self._import_btn.clicked.connect(lambda: self._open_create("package"))
         pkg_row.addWidget(self._import_btn)
         self._complete_btn = QPushButton("✅ Completar pendientes")
         self._complete_btn.setToolTip("La IA te pregunta por cada [COMPLETAR] del manual")
@@ -276,6 +288,32 @@ class MainWindow(QMainWindow):
         self._ai_status.setStyleSheet("color: #16a085;")
         layout.addWidget(self._ai_status)
         return box
+
+    def _build_activity_tab(self) -> QWidget:
+        """Pestaña con el log EN VIVO de lo que la IA genera (el flujo dual ya no
+        cae en el editor). Vive en su propia pestaña para no apretar al editor."""
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.addWidget(QLabel("Lo que la IA va generando, en vivo:"))
+        self._ai_log = QPlainTextEdit()
+        self._ai_log.setReadOnly(True)
+        self._ai_log.setPlaceholderText(
+            "Cuando generes o importes, acá vas a ver lo que la IA produce mientras trabaja."
+        )
+        layout.addWidget(self._ai_log)
+        return w
+
+    def _ai_log_reset(self, header: str = "") -> None:
+        self._ai_log.clear()
+        if header:
+            self._ai_log.appendPlainText(header)
+        if hasattr(self, "_tabs"):  # traer la pestaña de actividad al frente
+            self._tabs.setCurrentWidget(self._activity_tab)
+
+    def _ai_log_append(self, text: str) -> None:
+        self._ai_log.appendPlainText(text)
+        sb = self._ai_log.verticalScrollBar()
+        sb.setValue(sb.maximum())  # autoscroll al final
 
     def _set_ai_enabled(self, enabled: bool) -> None:
         """Prende o apaga el asistente según haya IA configurada."""
@@ -379,13 +417,14 @@ class MainWindow(QMainWindow):
         self._title_label.setText(
             f"{self._current.title}  ·  {self._current.type.value} / {self._current.category}"
         )
-        # Cargar el Markdown de la última versión para re-editar; si es un manual
-        # recién importado sin guardar, cargar su borrador.
+        # Un borrador sin guardar (recién importado, o una actualización pendiente
+        # sobre un manual que YA tiene versiones) es lo más fresco: tiene prioridad.
+        # Si no hay borrador, cargamos el Markdown de la última versión para re-editar.
         latest = self._current.latest_version
-        if latest and latest.sections:
-            self._editor.setPlainText(latest.sections[0].source_markdown)
-        elif self._current.id in self._drafts:
+        if self._current.id in self._drafts:
             self._editor.setPlainText(self._drafts[self._current.id])
+        elif latest and latest.sections:
+            self._editor.setPlainText(latest.sections[0].source_markdown)
         else:
             self._editor.clear()
         self._change_note.clear()
@@ -424,14 +463,49 @@ class MainWindow(QMainWindow):
 
     # --- Acciones ---------------------------------------------------------
 
-    def _on_new_manual(self) -> None:
+    def _open_create(self, source_default: str = "topic") -> None:
+        """Diálogo unificado de creación: la FUENTE (tema o paquete .zip) se elige
+        adentro. Genera funcional Y técnico con el MISMO motor dual."""
+        if not self._svc.ai_ready:
+            QMessageBox.warning(self, "Crear manual", "Configurá la IA antes de crear un manual.")
+            return
         categories = [c.label for c in self._svc.list_categories()]
-        dlg = NewManualDialog(self, categories=categories)
-        if dlg.exec():
-            v = dlg.values()
-            m = self._svc.create_manual(v["title"], v["tipo"], v["categoria"], v["description"])
-            self._refresh_manual_list(select_id=m.id)  # queda seleccionado el nuevo
-            self.statusBar().showMessage(f"✓ Manual «{m.title}» creado", 5000)
+        dlg = NewManualDialog(
+            self, categories=categories,
+            author=self._author, area=self._area, developer=self._developer,
+            source_default=source_default,
+        )
+        if not dlg.exec():
+            return
+        v = dlg.values()
+
+        # Recordamos responsable/desarrollador/área para la próxima.
+        self._author, self._area, self._developer = v["author"], v["area"], v["developer"]
+        if self._on_set_author:
+            self._on_set_author(self._author)
+        if self._on_set_area:
+            self._on_set_area(self._area)
+        if self._on_set_developer:
+            self._on_set_developer(self._developer)
+
+        self._pending_create = v
+        if v["source"] == "package":
+            self._begin_extraction(v["file_path"])  # extrae y sigue en _on_extract_done
+            return
+
+        # Fuente TEMA: directo al motor dual.
+        self._import_ctx = {
+            "source": "topic",
+            "topic": v["topic"], "context": v["context"],
+            "hint": self._svc.category_hint(v["categoria"]),
+            "author": v["author"], "area": v["area"], "fecha": v["fecha"],
+            "developer": v["developer"],
+            "title": v["title"], "categoria": v["categoria"],
+            "diff": None, "update_func_id": None, "update_tec_id": None,
+        }
+        self._import_func_id = None
+        self._import_tec_id = None
+        self._start_import_step(ManualType.FUNCIONAL)
 
     def _on_rename_manual(self) -> None:
         if not self._current:
@@ -522,7 +596,7 @@ class MainWindow(QMainWindow):
         """Pide responsable, área (solo funcional) y fecha (hoy, editable).
         Persiste autor y área para la próxima. Devuelve None si se cancela."""
         dlg = DocumentDataDialog(
-            self, author=self._author, area=self._area,
+            self, author=self._author, area=self._area, developer=self._developer,
             show_area=(tipo is ManualType.FUNCIONAL),
         )
         if not dlg.exec():
@@ -531,6 +605,9 @@ class MainWindow(QMainWindow):
         self._author = vals["author"]
         if self._on_set_author:
             self._on_set_author(self._author)
+        self._developer = vals["developer"]
+        if self._on_set_developer:
+            self._on_set_developer(self._developer)
         if tipo is ManualType.FUNCIONAL:
             self._area = vals["area"]
             if self._on_set_area:
@@ -562,13 +639,14 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # Modos que arman el manual desde cero: pedimos responsable, área y fecha.
-        author, area, fecha = self._author, self._area, ""
+        # Modos que arman el manual desde cero: pedimos responsable, desarrollador, área y fecha.
+        author, area, fecha, developer = self._author, self._area, "", self._developer
         if mode in ("generate", "transcription"):
             data = self._ask_document_data(tipo)
             if data is None:
                 return
             author, area, fecha = data["author"], data["area"], data["fecha"]
+            developer = data["developer"]
 
         # Complementar INTEGRA sobre lo existente → el resultado reemplaza el editor.
         self._ai_replace_editor = (mode == "complement")
@@ -577,7 +655,7 @@ class MainWindow(QMainWindow):
             if mode == "generate":
                 return self._svc.ai_generate(
                     topic=text, tipo=tipo, categoria_hint=hint,
-                    author=author, area=area, fecha=fecha,
+                    author=author, area=area, fecha=fecha, developer=developer,
                 )
             if mode == "document_code":
                 return self._svc.ai_document_code(code=text, tipo=tipo, categoria_hint=hint)
@@ -587,7 +665,7 @@ class MainWindow(QMainWindow):
                 )
             return self._svc.ai_from_transcription(
                 transcription=text, tipo=tipo, categoria_hint=hint,
-                author=author, area=area, fecha=fecha,
+                author=author, area=area, fecha=fecha, developer=developer,
             )
 
         self._ai_btn.setEnabled(False)
@@ -598,31 +676,46 @@ class MainWindow(QMainWindow):
         self._worker.failed.connect(self._on_ai_error)
         self._worker.start()
 
-    def _on_import_package(self) -> None:
-        """Importa un paquete y genera DOS manuales: funcional Y técnico, cada uno
-        con su propio PDF. Quedan como borrador para revisar/guardar de a uno."""
-        if not self._svc.ai_ready:
-            QMessageBox.warning(self, "Importar", "Configurá la IA antes de importar.")
-            return
+    def _begin_extraction(self, path: str) -> None:
+        """Lee + parsea el paquete en un hilo (no congela la UI) y sigue en
+        _on_extract_done. Los datos del documento ya vienen de _pending_create."""
+        self._import_btn.setEnabled(False)
+        self._ai_btn.setEnabled(False)
+        self._ai_busy(True)
+        nombre = path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        self._ai_status.setText(f"📦 Leyendo y analizando «{nombre}»… (puede tardar en soluciones grandes)")
+        self.statusBar().showMessage("Leyendo el paquete…")
 
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Elegí el archivo a importar (Power Platform o Excel con macros)", "",
-            "Paquete (*.zip *.msapp *.xlsm)",
-        )
-        if not path:
-            return
-
-        # Leer + extraer es rápido y NO toca la red: va en el hilo principal.
-        try:
+        def read_and_extract() -> object:
             with open(path, "rb") as f:
                 data = f.read()
-            extracted = self._svc.extract_package(data, path)
-        except Exception as exc:  # noqa: BLE001 — formato inesperado / archivo roto
-            QMessageBox.critical(
-                self, "No se pudo leer el paquete",
-                f"No pude extraer la estructura del paquete:\n\n{exc}",
-            )
-            return
+            return self._svc.extract_package(data, path)
+
+        self._worker = TaskWorker(read_and_extract)
+        self._worker.finished_ok.connect(self._on_extract_done)
+        self._worker.failed.connect(self._on_extract_error)
+        self._worker.start()
+
+    def _on_extract_error(self, message: str) -> None:
+        self._ai_busy(False)
+        self._ai_status.setText("")
+        self.statusBar().clearMessage()
+        self._import_btn.setEnabled(self._svc.extractor_ready)
+        self._ai_btn.setEnabled(True)
+        QMessageBox.critical(
+            self, "No se pudo leer el paquete",
+            f"No pude extraer la estructura del paquete:\n\n{message}",
+        )
+
+    def _on_extract_done(self, extracted) -> None:
+        """Tras extraer (hilo principal): avisos, detección de re-import y arranque
+        del motor dual. Los datos del documento ya los tomó el diálogo de creación."""
+        v = self._pending_create
+        self._ai_busy(False)
+        self._ai_status.setText("✓ Paquete analizado.")
+        self.statusBar().clearMessage()
+        self._import_btn.setEnabled(self._svc.extractor_ready)
+        self._ai_btn.setEnabled(True)
 
         if extracted.warnings:
             QMessageBox.warning(
@@ -630,52 +723,99 @@ class MainWindow(QMainWindow):
                 "Leí el paquete, pero con advertencias:\n\n- " + "\n- ".join(extracted.warnings),
             )
 
-        dlg = ImportDialog(
-            self, package_name=extracted.name,
-            categories=[c.label for c in self._svc.list_categories()],
-            author=self._author, area=self._area,
-        )
-        if not dlg.exec():
-            return
-        vals = dlg.values()
+        # ¿Ya importamos este paquete antes? (seguimiento de cambios entre versiones)
+        update_diff, existing_ids = self._detect_reimport(extracted)
 
-        # Recordamos autor/área y el título+categoría para crear los manuales después.
-        self._author, self._area = vals["author"], vals["area"]
-        if self._on_set_author:
-            self._on_set_author(self._author)
-        if self._on_set_area:
-            self._on_set_area(self._area)
-        self._import_title = vals["title"]
-        self._import_categoria = vals["categoria"]
-
-        # Contexto de la importación: se genera funcional y técnico en DOS pasos
-        # independientes (cada uno como el individual que ya funciona). Si el 2º
-        # falla, el 1º YA quedó creado: NO es todo-o-nada.
         self._import_ctx = {
+            "source": "package",
             "extracted": extracted,
-            "hint": self._svc.category_hint(vals["categoria"]),
-            "author": vals["author"], "area": vals["area"], "fecha": vals["fecha"],
-            "title": vals["title"], "categoria": vals["categoria"],
+            "hint": self._svc.category_hint(v["categoria"]),
+            "author": v["author"], "area": v["area"], "fecha": v["fecha"],
+            "developer": v["developer"],
+            # Si el título base quedó vacío, usamos el nombre del paquete.
+            "title": v["title"] or extracted.name,
+            "categoria": v["categoria"],
+            # Seguimiento de cambios: si es actualización, el diff a marcar y a qué
+            # manuales (funcional/técnico) agregarles versión en vez de crear otros.
+            "diff": update_diff,
+            "update_func_id": existing_ids[0] if existing_ids else None,
+            "update_tec_id": existing_ids[1] if existing_ids else None,
         }
-        self._import_func_id = None  # id del funcional una vez creado
+        self._import_func_id = None  # id del funcional una vez creado/encontrado
+        self._import_tec_id = None
         self._start_import_step(ManualType.FUNCIONAL)
 
+    def _detect_reimport(self, extracted):
+        """¿Este paquete ya se importó? Si sí y hay cambios, ofrece actualizar los
+        manuales existentes como nueva versión. Devuelve (diff|None, (func_id, tec_id)|None)."""
+        stored = self._svc.find_snapshot(extracted.unique_name)
+        if stored is None or stored.manual_func_id is None or stored.manual_tec_id is None:
+            return None, None  # primera vez (o sin manuales ligados): flujo normal
+        # Verificamos que los manuales sigan existiendo (pudieron borrarse).
+        if self._svc.get_manual(stored.manual_func_id) is None or \
+                self._svc.get_manual(stored.manual_tec_id) is None:
+            return None, None
+        diff = self._svc.diff_for(extracted)
+        resumen = (
+            f"{len(diff.deprecated)} deprecado(s), {len(diff.modified)} modificado(s), "
+            f"{len(diff.added)} nuevo(s)"
+        )
+        ok = QMessageBox.question(
+            self, "Esta solución ya existe",
+            f"«{extracted.name}» ya fue importada (versión {diff.version_from}).\n"
+            f"Nueva versión: {diff.version_to}. Cambios detectados: {resumen}.\n\n"
+            "¿Actualizar los manuales existentes como NUEVA VERSIÓN, marcando lo "
+            "deprecado y lo que cambió?\n\n"
+            "(Si elegís No, se generan manuales nuevos desde cero, sin marcar cambios.)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ok != QMessageBox.StandardButton.Yes:
+            return None, None
+        return diff, (stored.manual_func_id, stored.manual_tec_id)
+
     def _start_import_step(self, tipo: ManualType) -> None:
+        """Motor de generación DUAL (funcional → técnico, en dos pasos). Lo usan
+        tanto la importación de un paquete como la creación desde un tema escrito;
+        la diferencia es solo de QUÉ generador se llama (según ctx["source"])."""
         ctx = self._import_ctx
         label = "funcional" if tipo is ManualType.FUNCIONAL else "técnico"
+        extracted = ctx.get("extracted")
+        n_comp = len(extracted.components) if extracted is not None else 1
 
         def call() -> str:
-            return self._svc.ai_from_package(
-                extracted=ctx["extracted"], tipo=tipo, categoria_hint=ctx["hint"],
+            if ctx["source"] == "package":
+                return self._svc.ai_from_package(
+                    extracted=ctx["extracted"], tipo=tipo, categoria_hint=ctx["hint"],
+                    author=ctx["author"], area=ctx["area"], fecha=ctx["fecha"],
+                    developer=ctx["developer"], diff=ctx["diff"],
+                    progress=self._worker.progress.emit,  # reporta avance a la UI
+                )
+            return self._svc.ai_generate(
+                topic=ctx["topic"], tipo=tipo, categoria_hint=ctx["hint"],
                 author=ctx["author"], area=ctx["area"], fecha=ctx["fecha"],
+                developer=ctx["developer"], context=ctx["context"],
             )
 
         self._ai_btn.setEnabled(False)
         self._import_btn.setEnabled(False)
         self._complete_btn.setEnabled(False)
         self._ai_busy(True)
-        self._ai_status.setText(f"Redactando manual {label}…")
+        # El log se limpia al arrancar (paso funcional) y acumula funcional + técnico.
+        if tipo is ManualType.FUNCIONAL:
+            self._ai_log_reset(f"▶ Generando «{ctx['title']}» (funcional + técnico)…\n")
+            if extracted is not None:  # diagnóstico: qué detectó el extractor
+                self._ai_log_append(self._componentes_detectados(extracted))
+        self._ai_log_append(f"\n━━ Manual {label.upper()} ━━")
+        # Aviso honesto: una Solution con muchos componentes hace muchas llamadas.
+        if n_comp > 1:
+            self._ai_status.setText(
+                f"Redactando manual {label} de {n_comp} componentes… "
+                "(hace una llamada por componente; puede tardar varios minutos)"
+            )
+        else:
+            self._ai_status.setText(f"Redactando manual {label}…")
         self._worker = AIWorker(call)
+        self._worker.progress.connect(self._on_gen_progress)
         if tipo is ManualType.FUNCIONAL:
             self._worker.finished_ok.connect(self._on_import_func_done)
         else:
@@ -683,31 +823,82 @@ class MainWindow(QMainWindow):
         self._worker.failed.connect(self._on_import_error)
         self._worker.start()
 
-    def _on_import_func_done(self, markdown: str) -> None:
-        ctx = self._import_ctx
-        m = self._svc.create_manual(
-            f"{ctx['title']} (Funcional)", ManualType.FUNCIONAL, ctx["categoria"]
+    @staticmethod
+    def _componentes_detectados(extracted) -> str:
+        """Resumen claro de QUÉ encontró el extractor en el paquete (diagnóstico).
+        Si algo quedó en 0, el usuario ve al toque que la extracción no lo reconoció."""
+        from collections import Counter
+
+        _ETIQUETAS = {
+            "power-automate-flow": "flujo(s) de Power Automate",
+            "power-apps-canvas": "app(s) de Power Apps",
+            "dataverse-table": "tabla(s) de Dataverse",
+            "dataverse-security": "esquema(s) de seguridad",
+        }
+        counts = Counter(c.kind for c in extracted.components)
+        if not counts:
+            return "📦 Detecté el paquete pero SIN componentes legibles."
+        detalle = ", ".join(
+            f"{n} {_ETIQUETAS.get(kind, kind)}" for kind, n in counts.items()
         )
+        aviso = ""
+        if extracted.warnings:
+            aviso = "\n⚠ Avisos de extracción:\n- " + "\n- ".join(extracted.warnings)
+        return f"📦 El extractor detectó: {detalle}.{aviso}\n"
+
+    def _on_gen_progress(self, message: str) -> None:
+        """Avance parcial de la generación. El mensaje completo (puede traer la
+        sección recién redactada) va al panel de actividad; el status, solo la
+        primera línea, corta."""
+        self._ai_log_append(message)
+        primera = message.splitlines()[0] if message else ""
+        self._ai_status.setText(f"⏳ {primera[:90]}")
+        self.statusBar().showMessage(primera[:120])
+
+    def _import_target_id(self, tipo: ManualType, markdown: str) -> int:
+        """Destino del borrador: si es ACTUALIZACIÓN, el manual existente (le
+        agregás versión al guardar); si no, uno nuevo. Devuelve el manual_id."""
+        ctx = self._import_ctx
+        update_id = ctx["update_func_id"] if tipo is ManualType.FUNCIONAL else ctx["update_tec_id"]
+        if update_id is not None:
+            self._drafts[update_id] = markdown
+            return update_id
+        suffix = "Funcional" if tipo is ManualType.FUNCIONAL else "Técnico"
+        m = self._svc.create_manual(f"{ctx['title']} ({suffix})", tipo, ctx["categoria"])
         self._drafts[m.id] = markdown
-        self._import_func_id = m.id
+        return m.id
+
+    def _on_import_func_done(self, markdown: str) -> None:
+        self._import_func_id = self._import_target_id(ManualType.FUNCIONAL, markdown)
+        self._ai_log_append(f"\n{markdown}\n")  # resultado del funcional, visible en vivo
         self.statusBar().showMessage("✓ Funcional generado. Ahora el técnico…", 6000)
         self._start_import_step(ManualType.TECNICO)  # encadena el 2º paso
 
     def _on_import_tec_done(self, markdown: str) -> None:
         ctx = self._import_ctx
-        m = self._svc.create_manual(
-            f"{ctx['title']} (Técnico)", ManualType.TECNICO, ctx["categoria"]
-        )
-        self._drafts[m.id] = markdown
+        self._import_tec_id = self._import_target_id(ManualType.TECNICO, markdown)
+        self._ai_log_append(f"\n{markdown}\n\n✓ Listo: 2 borradores generados.")
+        # El snapshot (seguimiento de cambios) es SOLO para paquetes: un tema escrito
+        # no tiene estructura ni versión contra la cual comparar.
+        if ctx["source"] == "package":
+            self._svc.save_snapshot(
+                ctx["extracted"],
+                manual_func_id=self._import_func_id, manual_tec_id=self._import_tec_id,
+            )
+        es_update = ctx["diff"] is not None
         self._ai_busy(False)
         self._ai_btn.setEnabled(True)
         self._import_btn.setEnabled(self._svc.extractor_ready)
         self._complete_btn.setEnabled(self._svc.ai_ready)
         self._refresh_manual_list(select_id=self._import_func_id)  # abre el funcional
+        self._tabs.setCurrentIndex(0)  # volvemos al Editor para revisar/guardar
         self._ai_status.setText("✓ Listo.")
-        self.statusBar().showMessage(
-            "✓ 2 borradores generados (funcional + técnico). Revisá y guardá cada uno.", 10000
+        msg = (
+            "✓ Manuales actualizados como nueva versión (cambios marcados). Revisá y guardá cada uno."
+            if es_update
+            else "✓ 2 borradores generados (funcional + técnico). Revisá y guardá cada uno."
         )
+        self.statusBar().showMessage(msg, 10000)
 
     def _on_import_error(self, message: str) -> None:
         """Si el 1º (funcional) ya se creó, NO se pierde: avisamos qué falló."""

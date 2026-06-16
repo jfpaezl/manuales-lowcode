@@ -8,11 +8,15 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from datetime import date
 
+from ..domain.change_tracking import (
+    DiffResult, PackageSnapshot, StoredSnapshot, diff_package,
+)
 from ..domain.entities import (
     Category, ExtractedPackage, Manual, ManualType, ManualVersion, Section,
 )
 from ..domain.ports import (
-    AIProvider, CategoryRepository, ManualRepository, PackageExtractor, PDFRenderer,
+    AIAuthError, AIProvider, CategoryRepository, ManualRepository, PackageExtractor,
+    PackageSnapshotRepository, PDFRenderer,
 )
 from . import ai_prompts, pending
 
@@ -34,6 +38,7 @@ class ManualService:
         categories: CategoryRepository | None = None,
         extractor: PackageExtractor | None = None,
         worker_ai: AIProvider | None = None,
+        snapshots: PackageSnapshotRepository | None = None,
     ) -> None:
         self._repo = repo
         self._renderer = renderer
@@ -44,6 +49,8 @@ class ManualService:
         # "Obrero": modelo chico para la generación orquestada. Si no hay, se usa
         # el orquestador (self._ai) para todo (degrada con elegancia).
         self._worker_ai = worker_ai
+        # Memoria de paquetes importados, para el seguimiento de cambios entre versiones.
+        self._snapshots = snapshots
 
     # --- IA: configuración en caliente ------------------------------------
 
@@ -176,12 +183,13 @@ class ManualService:
 
     def ai_generate(
         self, *, topic: str, tipo: ManualType, categoria_hint: str, author: str = "",
-        context: str = "", area: str = "", fecha: str = "",
+        context: str = "", area: str = "", fecha: str = "", developer: str = "",
     ) -> str:
         """Modo 1 → devuelve Markdown. NO toca la base: seguro en otro hilo."""
         system, user = ai_prompts.build_generate(
             topic=topic, tipo=tipo, categoria_hint=categoria_hint,
             author=author, fecha=self._fecha_o_hoy(fecha), context=context, area=area,
+            developer=developer,
         )
         return self._ask_ai(system, user)
 
@@ -207,43 +215,132 @@ class ManualService:
 
     def ai_from_package(
         self, *, extracted: ExtractedPackage, tipo: ManualType, categoria_hint: str,
-        author: str = "", area: str = "", fecha: str = "",
+        author: str = "", area: str = "", fecha: str = "", developer: str = "",
+        diff: DiffResult | None = None, progress: Callable[[str], None] | None = None,
     ) -> str:
         """Modo 4 → de la estructura extraída de un paquete a manual. NO toca la base.
 
         Si el paquete trae VARIOS componentes (ej: una Solution), usa el patrón
         orquestador/obrero: el modelo chico redacta cada componente, el potente
-        integra. Si es atómico, una sola llamada."""
+        integra. Si es atómico, una sola llamada. `diff` (opcional) marca los
+        cambios respecto a la versión anterior. `progress` (opcional) reporta el
+        avance componente a componente para que la UI no parezca colgada."""
         if len(extracted.components) > 1:
-            return self._orchestrate(extracted, tipo, categoria_hint, author, area, fecha)
+            return self._orchestrate(
+                extracted, tipo, categoria_hint, author, area, fecha, developer, diff,
+                progress,
+            )
+        if progress:
+            progress("Generando el manual…")
         system, user = ai_prompts.build_from_package(
             package_name=extracted.name, package_summary=extracted.summary_markdown,
             tipo=tipo, categoria_hint=categoria_hint,
-            author=author, fecha=self._fecha_o_hoy(fecha), area=area,
+            author=author, fecha=self._fecha_o_hoy(fecha), area=area, developer=developer,
+            version=extracted.version, diff=diff, kind=extracted.kind,
         )
         return self._ask_ai(system, user)
 
+    def _section_provider(self, tipo: ManualType) -> AIProvider:
+        """Qué modelo redacta cada sección de componente en una Solution.
+
+        - FUNCIONAL → el ORQUESTADOR (modelo potente/estable). Sus secciones son
+          BREVES, así que el costo extra es bajo y se evita que el obrero (chico)
+          se cuelgue con manuales grandes.
+        - TÉCNICO → el OBRERO (modelo chico) para el grueso; si no hay, degrada al
+          orquestador. Acá es donde el ahorro del obrero importa (secciones largas)."""
+        if tipo is ManualType.FUNCIONAL:
+            return self._ai
+        return self._worker_ai or self._ai
+
     def _orchestrate(
         self, extracted: ExtractedPackage, tipo: ManualType, categoria_hint: str,
-        author: str, area: str, fecha: str,
+        author: str, area: str, fecha: str, developer: str = "",
+        diff: DiffResult | None = None, progress: Callable[[str], None] | None = None,
     ) -> str:
         """Patrón orquestador/obrero. OBREROS (modelo chico) redactan cada
-        componente; el ORQUESTADOR (modelo potente, self._ai) integra todo."""
+        componente; el ORQUESTADOR (modelo potente, self._ai) integra todo.
+
+        Resiliente: si un componente falla o se cuelga, NO mata toda la generación
+        (que puede ser de muchos componentes); deja un placeholder y sigue. Reporta
+        el avance por `progress` para que no parezca colgado."""
         if self._ai is None:
             raise RuntimeError("No hay proveedor de IA configurado (revisá config.toml)")
-        worker = self._worker_ai or self._ai  # sin obrero → degrada al orquestador
+        worker = self._section_provider(tipo)
+        worker_unavailable = False  # si el obrero da 401, caemos al principal
 
         parts: list[str] = []
-        for comp in extracted.components:
+        total = len(extracted.components)
+        for i, comp in enumerate(extracted.components, 1):
+            if progress:
+                progress(f"Documentando componente {i}/{total}: «{comp.name}»…")
             system, user = ai_prompts.build_worker_section(comp, tipo, categoria_hint)
-            parts.append(worker.complete(system, user))
+            activo = self._ai if worker_unavailable else worker
+            try:
+                part = activo.complete(system, user)
+            except AIAuthError:
+                # 401 del OBRERO: caemos al modelo principal para este y los próximos
+                # (el manual se genera completo igual). Si el que falló ES el principal,
+                # no hay con qué seguir → propaga (aborta con mensaje claro).
+                if activo is self._ai:
+                    raise
+                worker_unavailable = True
+                if progress:
+                    progress("⚠ El modelo obrero devolvió 401 (no autorizado); "
+                             "sigo con el modelo principal.")
+                part = self._ai.complete(system, user)
+            except Exception as exc:  # noqa: BLE001 — un componente no debe matar todo
+                part = (
+                    f"## {comp.name}\n\n[COMPLETAR] No se pudo documentar "
+                    f"automáticamente este componente (error: {exc}). Revisalo a mano."
+                )
+            parts.append(part)
+            if progress:  # mostramos lo redactado en vivo (panel de actividad)
+                progress(f"✓ «{comp.name}» listo:\n{part}")
 
+        if progress:
+            progress(f"Integrando el manual completo ({total} componentes)…")
         system, user = ai_prompts.build_orchestrate(
             solution_name=extracted.name, parts=parts, tipo=tipo,
             categoria_hint=categoria_hint, author=author, area=area,
-            fecha=self._fecha_o_hoy(fecha),
+            fecha=self._fecha_o_hoy(fecha), developer=developer,
+            version=extracted.version, diff=diff,
         )
-        return self._ai.complete(system, user)
+        try:
+            return self._ai.complete(system, user)
+        except AIAuthError:
+            raise  # 401 en la integración: abortar claro, no devolver un cascarón
+        except Exception as exc:  # noqa: BLE001 — no perder lo redactado por los obreros
+            # Si la integración final falla (ej: timeout con el prompt grande), NO
+            # tiramos todo: devolvemos las secciones ya redactadas, en modo degradado.
+            aviso = (
+                f"[COMPLETAR] No se pudo integrar automáticamente el manual "
+                f"(error: {exc}). Abajo van las secciones por componente, sin integrar; "
+                "revisalas y unificalas a mano o reintentá la integración."
+            )
+            return aviso + "\n\n" + "\n\n".join(parts)
+
+    # --- Seguimiento de cambios entre versiones ---------------------------
+
+    def find_snapshot(self, unique_name: str) -> StoredSnapshot | None:
+        """Última foto guardada de ese paquete (o None si nunca se importó)."""
+        return self._snapshots.get(unique_name) if self._snapshots else None
+
+    def diff_for(self, extracted: ExtractedPackage) -> DiffResult:
+        """Compara el paquete recién extraído contra su última importación."""
+        stored = self.find_snapshot(extracted.unique_name)
+        return diff_package(stored.snapshot if stored else None, extracted)
+
+    def save_snapshot(
+        self, extracted: ExtractedPackage, *,
+        manual_func_id: int | None = None, manual_tec_id: int | None = None,
+    ) -> None:
+        """Guarda la foto del paquete importado para poder comparar la próxima vez."""
+        if self._snapshots is None:
+            return
+        self._snapshots.save(StoredSnapshot(
+            snapshot=PackageSnapshot.from_package(extracted),
+            manual_func_id=manual_func_id, manual_tec_id=manual_tec_id,
+        ))
 
     # --- Completar huecos [COMPLETAR] -------------------------------------
 
@@ -277,12 +374,12 @@ class ManualService:
 
     def ai_from_transcription(
         self, *, transcription: str, tipo: ManualType, categoria_hint: str, author: str = "",
-        area: str = "", fecha: str = "",
+        area: str = "", fecha: str = "", developer: str = "",
     ) -> str:
         """Modo 3 → transcripción hablada a manual. NO toca la base."""
         system, user = ai_prompts.build_from_transcription(
             transcription=transcription, tipo=tipo, categoria_hint=categoria_hint,
-            author=author, fecha=self._fecha_o_hoy(fecha), area=area,
+            author=author, fecha=self._fecha_o_hoy(fecha), area=area, developer=developer,
         )
         return self._ask_ai(system, user)
 

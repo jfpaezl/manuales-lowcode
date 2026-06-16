@@ -125,6 +125,7 @@ class PowerAutomateFlowExtractor(PackageExtractor):
             name=name,
             summary_markdown="\n".join(lines),
             warnings=warnings,
+            unique_name=name,  # identidad para reconocer el mismo flujo al re-importar
         )
 
     # --- Localización defensiva ------------------------------------------

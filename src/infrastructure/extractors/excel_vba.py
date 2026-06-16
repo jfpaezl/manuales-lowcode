@@ -59,6 +59,7 @@ class ExcelVBAExtractor(PackageExtractor):
 
         return ExtractedPackage(
             kind="excel-vba", name=name, summary_markdown="\n".join(lines),
+            unique_name=name,  # identidad para reconocer la misma macro al re-importar
         )
 
     @staticmethod

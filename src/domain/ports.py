@@ -8,11 +8,18 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from .change_tracking import StoredSnapshot
 from .entities import Category, ExtractedPackage, Manual, ManualVersion
 
 
 class UnsupportedPackageError(Exception):
     """El paquete no es reconocido por el extractor (formato/contenido inesperado)."""
+
+
+class AIAuthError(Exception):
+    """El proveedor de IA rechazó la autorización (HTTP 401): API key sin acceso al
+    modelo, o modelo inexistente en esa conexión. Es SISTÉMICO (todas las llamadas
+    a ese modelo van a fallar igual), así que no se trata como un fallo puntual."""
 
 
 class ManualRepository(ABC):
@@ -53,6 +60,21 @@ class ManualRepository(ABC):
     @abstractmethod
     def count_by_category(self, label: str) -> int:
         """Cuántos manuales usan esa categoría (para borrado seguro)."""
+
+
+class PackageSnapshotRepository(ABC):
+    """Persistencia de la «foto» de cada paquete importado (por unique_name).
+
+    Es la memoria que habilita el seguimiento de cambios: guarda qué componentes
+    y versión tenía la última importación, para comparar la próxima."""
+
+    @abstractmethod
+    def save(self, stored: StoredSnapshot) -> None:
+        """Guarda/actualiza el snapshot (upsert por unique_name)."""
+
+    @abstractmethod
+    def get(self, unique_name: str) -> StoredSnapshot | None:
+        """Trae el último snapshot de ese paquete, o None si nunca se importó."""
 
 
 class CategoryRepository(ABC):
