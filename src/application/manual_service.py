@@ -15,8 +15,8 @@ from ..domain.entities import (
     Category, ExtractedPackage, Manual, ManualType, ManualVersion, Section,
 )
 from ..domain.ports import (
-    AIAuthError, AIProvider, CategoryRepository, ManualRepository, PackageExtractor,
-    PackageSnapshotRepository, PDFRenderer,
+    AIAuthError, AIProvider, CategoryRepository, DocxRenderer, ManualRepository,
+    PackageExtractor, PackageSnapshotRepository, PDFRenderer,
 )
 from . import ai_prompts, pending
 
@@ -39,9 +39,11 @@ class ManualService:
         extractor: PackageExtractor | None = None,
         worker_ai: AIProvider | None = None,
         snapshots: PackageSnapshotRepository | None = None,
+        docx_renderer: DocxRenderer | None = None,
     ) -> None:
         self._repo = repo
         self._renderer = renderer
+        self._docx = docx_renderer
         self._ai = ai
         self._md_to_html = md_to_html
         self._categories = categories
@@ -57,6 +59,12 @@ class ManualService:
     @property
     def ai_ready(self) -> bool:
         return self._ai is not None
+
+    @property
+    def ai_model_name(self) -> str:
+        """Nombre del modelo principal (para mostrarlo en los logs de la UI). "" si
+        el proveedor no lo expone o no hay IA."""
+        return getattr(self._ai, "model", "") if self._ai is not None else ""
 
     def set_ai(self, provider: AIProvider | None) -> None:
         """Cambia el proveedor de IA (orquestador) sin reiniciar la app."""
@@ -155,6 +163,17 @@ class ManualService:
     def get_version_pdf(self, version_id: int) -> bytes | None:
         version = self._repo.get_version(version_id)
         return version.pdf_blob if version else None
+
+    @property
+    def docx_ready(self) -> bool:
+        return self._docx is not None
+
+    def build_docx(self, manual: Manual, version: ManualVersion) -> bytes:
+        """Genera el .docx de una versión AL VUELO (no se guarda como BLOB: el Word
+        es editable, se regenera cuando lo pedís). NO toca la base ni la red."""
+        if self._docx is None:
+            raise RuntimeError("No hay renderer de Word configurado")
+        return self._docx.render(manual, version)
 
     @staticmethod
     def _combine(sections: Sequence[Section]) -> str:
@@ -369,6 +388,73 @@ class ManualService:
         system, user = ai_prompts.build_complement(
             current_markdown=current_markdown, instructions=instructions,
             tipo=tipo, categoria_hint=categoria_hint,
+        )
+        return self._ask_ai(system, user)
+
+    def ai_document_package_section(
+        self, *, extracted: ExtractedPackage, tipo: ManualType, categoria_hint: str,
+        progress: Callable[[str], None] | None = None,
+    ) -> str:
+        """Genera la documentación de un paquete como BLOQUE DE SECCIONES listo para
+        ADJUNTAR a un manual existente. NO reescribe el manual destino.
+
+        Clave anti-timeout: cada componente se documenta con UNA llamada de obrero
+        (chica), y NO hay una llamada final de integración que re-emita todo. Así
+        ninguna llamada se acerca al corte de ~120s del modelo. Cada componente se
+        documenta por SU `kind` (modelo de Power BI, reporte, flujo, etc.).
+
+        Resiliente: si un componente falla, deja un [COMPLETAR] y sigue (no pierde
+        el resto). `progress` reporta el avance componente a componente."""
+        if self._ai is None:
+            raise RuntimeError("No hay proveedor de IA configurado (revisá config.toml)")
+        # Atómico (sin sub-componentes): la unidad es el paquete mismo.
+        componentes = extracted.components or [extracted]
+        worker = self._section_provider(tipo)
+        worker_unavailable = False
+        total = len(componentes)
+        partes: list[str] = []
+        for i, comp in enumerate(componentes, 1):
+            if progress:
+                progress(f"Documentando «{comp.name}» ({i}/{total})…")
+            system, user = ai_prompts.build_worker_section(comp, tipo, categoria_hint)
+            activo = self._ai if worker_unavailable else worker
+            try:
+                parte = activo.complete(system, user)
+            except AIAuthError:
+                if activo is self._ai:
+                    raise
+                worker_unavailable = True
+                if progress:
+                    progress("⚠ El modelo obrero devolvió 401; sigo con el principal.")
+                parte = self._ai.complete(system, user)
+            except Exception as exc:  # noqa: BLE001 — un componente no mata la integración
+                parte = (
+                    f"## {comp.name}\n\n[COMPLETAR] No se pudo documentar "
+                    f"automáticamente (error: {exc}). Revisalo a mano."
+                )
+            partes.append(parte)
+            if progress:
+                progress(f"✓ «{comp.name}» listo:\n{parte}")
+        return "\n\n".join(partes)
+
+    def ai_complement_with_package(
+        self, *, current_markdown: str, extracted: ExtractedPackage, tipo: ManualType,
+        categoria_hint: str,
+    ) -> str:
+        """Integra la ESTRUCTURA de un paquete (zip / Power BI) DENTRO de un manual
+        YA existente —complementar, pero con material extraído en vez de texto—.
+
+        Reusa el motor de complementar: una sola pasada que integra lo nuevo sin
+        perder lo que había. El `kind` rutea el knowledge pack correcto. NO toca
+        la base ni la red en sí (lo hace el proveedor de IA)."""
+        system, user = ai_prompts.build_complement(
+            current_markdown=current_markdown,
+            instructions=extracted.summary_markdown,
+            tipo=tipo, categoria_hint=categoria_hint, kind=extracted.kind,
+            material_label=(
+                "ESTRUCTURA EXTRAÍDA del paquete a integrar (verdad verificable: "
+                "integrala fielmente en las secciones que correspondan)"
+            ),
         )
         return self._ask_ai(system, user)
 

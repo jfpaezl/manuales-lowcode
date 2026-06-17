@@ -85,6 +85,34 @@ def test_extrae_nombre_app_y_fuentes_de_datos():
     assert "CustomGallerySample" in r.summary_markdown
 
 
+def test_fuente_conectada_muestra_sitio_lista_y_flujos():
+    # Caso REAL: una app que llama a varios flujos (shared_logicflows) y además
+    # tiene fuentes SharePoint/Excel directas con la RUTA en DatasetName/TableName.
+    data_sources = [
+        {"Name": "CentralizadorPerApps", "Type": "ServiceInfo",
+         "ApiId": "/providers/microsoft.powerapps/apis/shared_logicflows"},
+        {"Name": "Centralizador Peru", "Type": "ConnectedDataSourceInfo",
+         "ApiId": "/providers/microsoft.powerapps/apis/shared_sharepointonline",
+         "DatasetName": "https://contoso.sharepoint.com/sites/Ops",
+         "TableName": "41d3f30f-6653-4e61-bafe-087e2724e9c0"},
+        {"Name": "CodigoFondos", "Type": "ConnectedDataSourceInfo",
+         "ApiId": "/providers/microsoft.powerapps/apis/shared_excelonlinebusiness",
+         "DatasetName": "https%253A%252F%252Fcontoso.sharepoint.com%252Fsites%252FFondos",
+         "TableName": "{7BBDA6E1-3E6F-456A-A205-7E942FFCD27B}"},
+    ]
+    pkg = _package_zip(_msapp_bytes(data_sources=data_sources))
+    md = PowerAppsCanvasExtractor().extract(pkg, "app.zip").summary_markdown
+    # El flujo conectado se reconoce como tal (app con varios Power Automate).
+    assert "CentralizadorPerApps — flujo de Power Automate" in md
+    # La ruta de SharePoint aparece (sitio + lista), no [COMPLETAR].
+    assert "https://contoso.sharepoint.com/sites/Ops" in md
+    assert "41d3f30f-6653-4e61-bafe-087e2724e9c0" in md
+    assert "SharePoint" in md
+    # El sitio de Excel venía doble-encodeado: debe verse legible.
+    assert "https://contoso.sharepoint.com/sites/Fondos" in md
+    assert "Excel Online" in md
+
+
 def test_lista_pantalla_y_jerarquia_de_controles():
     r = PowerAppsCanvasExtractor().extract(_package_zip(_msapp_bytes()), "x.zip")
     md = r.summary_markdown

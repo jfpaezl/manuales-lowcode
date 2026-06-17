@@ -52,6 +52,11 @@ class OpenAICompatibleProvider(AIProvider):
             max_retries=config.max_retries,
         )
 
+    @property
+    def model(self) -> str:
+        """Nombre del modelo configurado (para mostrarlo en la UI/logs)."""
+        return self._config.model
+
     def complete(self, system_prompt: str, user_prompt: str) -> str:
         messages = [
             {"role": "system", "content": system_prompt},

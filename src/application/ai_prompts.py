@@ -109,14 +109,14 @@ def _knowledge_block(
 
 
 def _knowledge_block_ref(
-    tipo: ManualType, *, categoria_hint: str = "", content: str = ""
+    tipo: ManualType, *, kind: str = "", categoria_hint: str = "", content: str = ""
 ) -> str:
     """Knowledge pack como REFERENCIA (para complementar): orienta qué cubre un
     buen manual de la tecnología, pero NO autoriza a inventar secciones fuera de
     lo que el usuario pidió integrar. Respeta el contrato quirúrgico del modo."""
     if tipo is not ManualType.TECNICO:
         return ""
-    guia = _resolve_knowledge(categoria_hint=categoria_hint, content=content)
+    guia = _resolve_knowledge(kind=kind, categoria_hint=categoria_hint, content=content)
     if not guia:
         return ""
     return (
@@ -320,12 +320,17 @@ def build_from_package(
 
 def build_complement(
     *, current_markdown: str, instructions: str, tipo: ManualType, categoria_hint: str,
+    material_label: str = "Información / indicaciones a integrar", kind: str = "",
 ) -> tuple[str, str]:
     """Modo 5: complementar/enriquecer un manual YA redactado.
 
-    La IA recibe el manual actual + indicaciones nuevas e INTEGRA todo en un
-    único manual, sin perder lo que había ni duplicar secciones. Devuelve el
-    manual COMPLETO actualizado (no un fragmento, no un segundo documento)."""
+    La IA recibe el manual actual + material nuevo e INTEGRA todo en un único
+    manual, sin perder lo que había ni duplicar secciones. Devuelve el manual
+    COMPLETO actualizado (no un fragmento, no un segundo documento).
+
+    El material nuevo puede ser texto (indicaciones del usuario) o la ESTRUCTURA
+    EXTRAÍDA de un paquete (zip/Power BI): ahí `material_label` lo aclara y `kind`
+    rutea el knowledge pack por la tecnología del paquete."""
     secciones = _secciones_existentes(current_markdown)
     user = (
         "A continuación hay un MANUAL ya redactado en Markdown. Tu tarea es "
@@ -340,8 +345,8 @@ def build_complement(
         "- Español neutro y profesional. No inventes datos: lo que falte, [COMPLETAR].\n"
         f"{secciones}\n"
         f"Tecnología: {categoria_hint}."
-        f"{_knowledge_block_ref(tipo, categoria_hint=categoria_hint, content=f'{current_markdown} {instructions}')}\n\n"
-        f"Información / indicaciones a integrar:\n{instructions}\n\n"
+        f"{_knowledge_block_ref(tipo, kind=kind, categoria_hint=categoria_hint, content=f'{current_markdown} {instructions}')}\n\n"
+        f"{material_label}:\n{instructions}\n\n"
         f"Manual actual:\n\"\"\"\n{current_markdown}\n\"\"\""
     )
     return _system_for(tipo), user
@@ -369,6 +374,12 @@ _KIND_LABEL = {
     "power-apps-canvas": "app de Power Apps",
     "dataverse-table": "tabla de Dataverse",
     "dataverse-security": "esquema de seguridad de Dataverse",
+    "excel-vba": "macro VBA de Excel",
+    "excel-powerquery": "conjunto de consultas Power Query (lenguaje M) de Excel",
+    "excel-workbook": "libro de Excel (macros + Power Query)",
+    "power-bi-model": "modelo de datos de Power BI (tablas, medidas DAX, relaciones)",
+    "power-bi-report": "reporte de Power BI (páginas y visuales)",
+    "power-bi": "informe de Power BI (modelo + reporte)",
 }
 
 

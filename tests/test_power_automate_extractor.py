@@ -172,6 +172,57 @@ def test_orden_en_cadena_larga_de_runafter():
     assert md.index("Filter") < md.index("Initialize") < md.index("Foreach") < md.index("Send")
 
 
+def test_extrae_la_ruta_de_sharepoint_de_los_parameters():
+    # Caso REAL: una acción PostItem de SharePoint trae el sitio (dataset) y la
+    # lista (table) en inputs.parameters. Antes se descartaba → quedaba [COMPLETAR].
+    definition = {
+        "triggers": {"Manual": {"type": "Request"}},
+        "actions": {
+            "Crear_elemento": {
+                "type": "OpenApiConnection",
+                "inputs": {
+                    "host": {"operationId": "PostItem", "connectionName": "shared_sharepointonline"},
+                    "parameters": {
+                        "dataset": "https://contoso.sharepoint.com/sites/Ventas",
+                        "table": "a1b2c3-guid",
+                        "item/Title": "@triggerBody()?['nombre']",
+                    },
+                },
+            }
+        },
+    }
+    md = PowerAutomateFlowExtractor().extract(_flow_zip("Flujo", definition)).summary_markdown
+    assert "https://contoso.sharepoint.com/sites/Ventas" in md   # el sitio aparece
+    assert "a1b2c3-guid" in md                                   # la lista aparece
+    assert "SharePoint" in md                                    # conector legible
+    assert "item/Title" not in md                                # el payload NO es ubicación
+
+
+def test_extrae_la_ruta_de_excel_y_desencodea_doble():
+    # Excel Online: source/drive/file/table. Y el sitio a veces viene DOBLE
+    # URL-encodeado; debe verse legible en el manual.
+    definition = {
+        "triggers": {"Manual": {"type": "Request"}},
+        "actions": {
+            "Listar_filas": {
+                "type": "OpenApiConnection",
+                "inputs": {
+                    "host": {"operationId": "GetItems", "connectionName": "shared_excelonlinebusiness-1"},
+                    "parameters": {
+                        "source": "https%253A%252F%252Fcontoso.sharepoint.com%252Fsites%252FOps",
+                        "file": "01ABC",
+                        "table": "{206722FD-E731-4DB5-A7C5-3347284788AA}",
+                    },
+                },
+            }
+        },
+    }
+    md = PowerAutomateFlowExtractor().extract(_flow_zip("Flujo", definition)).summary_markdown
+    assert "https://contoso.sharepoint.com/sites/Ops" in md      # des-encodeado
+    assert "Excel Online" in md                                  # conector legible (sin sufijo -1)
+    assert "206722FD" in md
+
+
 # --- Defensivo: distintas ubicaciones del workflow ------------------------
 
 def test_workflow_directo_en_definition_sin_properties():

@@ -23,6 +23,7 @@ import yaml
 
 from ...domain.entities import ExtractedPackage
 from ...domain.ports import PackageExtractor, UnsupportedPackageError
+from ._connectors import clean_path, connector_label
 
 
 class _PowerFxYamlLoader(yaml.SafeLoader):
@@ -121,10 +122,37 @@ class PowerAppsCanvasExtractor(PackageExtractor):
             out.append("- (no se declararon fuentes de datos)")
         for d in entries:
             if isinstance(d, dict) and d.get("Name"):
-                tipo = d.get("Type")
-                out.append(f"- {d['Name']}" + (f" ({tipo})" if tipo else ""))
+                out.append(self._describe_data_source(d))
         out.append("")
         return out
+
+    @staticmethod
+    def _describe_data_source(d: dict) -> str:
+        """Una línea por fuente. Para las CONECTADAS (SharePoint/Excel) saca la RUTA
+        real (DatasetName = sitio, TableName = lista/tabla), que antes se perdía. Y
+        reconoce las fuentes que en realidad son flujos de Power Automate (la app
+        que llama a varios flujos): así el manual los lista como dependencias."""
+        name = d["Name"]
+        tipo = d.get("Type")
+        conector = connector_label((d.get("ApiId") or "").rsplit("/", 1)[-1])
+
+        dataset = clean_path(d.get("DatasetName"))
+        table = clean_path(d.get("TableName"))
+        if dataset or table:
+            bits = []
+            if dataset:
+                bits.append(f"sitio {dataset}")
+            if table:
+                bits.append(f"tabla/lista {table}")
+            etiqueta = conector or "conexión"
+            return f"- {name} — {etiqueta}: " + " · ".join(bits)
+        if conector == "flujo de Power Automate":
+            return f"- {name} — flujo de Power Automate"
+        if tipo == "StaticDataSourceInfo":
+            return f"- {name} — colección local de ejemplo"
+        if conector:
+            return f"- {name} — {conector}"
+        return f"- {name}" + (f" ({tipo})" if tipo else "")
 
     def _screens_section(self, msapp: zipfile.ZipFile, warnings: list[str]) -> list[str]:
         out: list[str] = []

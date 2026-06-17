@@ -261,9 +261,15 @@ class MainWindow(QMainWindow):
         # Importar desde un paquete exportado (ej: flujo de Power Automate).
         # Extrae la estructura del ZIP y la manda a la IA para redactar el manual.
         pkg_row = QHBoxLayout()
-        self._import_btn = QPushButton("📦 Crear desde ZIP (Power Automate / Power Apps)…")
+        self._import_btn = QPushButton("📦 Crear desde paquete (Power Automate / Apps / Power BI / Excel)…")
         self._import_btn.clicked.connect(lambda: self._open_create("package"))
         pkg_row.addWidget(self._import_btn)
+        self._integrate_btn = QPushButton("📎 Integrar paquete al manual…")
+        self._integrate_btn.setToolTip(
+            "Mete un zip/Power BI DENTRO del manual abierto (lo complementa, no crea otro)"
+        )
+        self._integrate_btn.clicked.connect(self._on_integrate_package)
+        pkg_row.addWidget(self._integrate_btn)
         self._complete_btn = QPushButton("✅ Completar pendientes")
         self._complete_btn.setToolTip("La IA te pregunta por cada [COMPLETAR] del manual")
         self._complete_btn.clicked.connect(self._on_complete_pending)
@@ -320,8 +326,9 @@ class MainWindow(QMainWindow):
         self._ai_mode.setEnabled(enabled)
         self._ai_btn.setEnabled(enabled)
         self._ai_input.setEnabled(enabled)
-        # Importar paquete necesita IA Y un extractor configurado.
+        # Importar / integrar paquete necesitan IA Y un extractor configurado.
         self._import_btn.setEnabled(enabled and self._svc.extractor_ready)
+        self._integrate_btn.setEnabled(enabled and self._svc.extractor_ready)
         # Completar pendientes necesita IA.
         self._complete_btn.setEnabled(enabled)
         if enabled:
@@ -365,9 +372,15 @@ class MainWindow(QMainWindow):
 
         w = QWidget()
         layout = QVBoxLayout(w)
+        export_row = QHBoxLayout()
         btn_export = QPushButton("⬇ Exportar PDF a disco…")
         btn_export.clicked.connect(self._on_export_pdf)
-        layout.addWidget(btn_export)
+        btn_word = QPushButton("⬇ Exportar Word (.docx)…")
+        btn_word.setToolTip("Descarga el manual en Word, editable (no necesita Office para generarlo)")
+        btn_word.clicked.connect(self._on_export_docx)
+        export_row.addWidget(btn_export)
+        export_row.addWidget(btn_word)
+        layout.addLayout(export_row)
         layout.addWidget(self._pdf_view)
         return w
 
@@ -590,6 +603,28 @@ class MainWindow(QMainWindow):
                 f.write(pdf)
             QMessageBox.information(self, "Exportado", f"PDF guardado en:\n{path}")
 
+    def _on_export_docx(self) -> None:
+        if not self._current or not self._current.latest_version:
+            return
+        if not self._svc.docx_ready:
+            QMessageBox.information(self, "Sin Word", "La exportación a Word no está disponible.")
+            return
+        version = self._current.latest_version  # ya trae las secciones (con su markdown)
+        try:
+            data = self._svc.build_docx(self._current, version)
+        except Exception as exc:  # noqa: BLE001 — falta python-docx u otro problema al armar
+            QMessageBox.critical(
+                self, "No se pudo generar el Word",
+                f"No pude generar el documento Word:\n\n{exc}",
+            )
+            return
+        default = f"{self._current.title}_v{version.version}.docx"
+        path, _ = QFileDialog.getSaveFileName(self, "Exportar Word", default, "Word (*.docx)")
+        if path:
+            with open(path, "wb") as f:
+                f.write(data)
+            QMessageBox.information(self, "Exportado", f"Word guardado en:\n{path}")
+
     # --- IA ---------------------------------------------------------------
 
     def _ask_document_data(self, tipo: ManualType) -> dict | None:
@@ -701,11 +736,117 @@ class MainWindow(QMainWindow):
         self._ai_status.setText("")
         self.statusBar().clearMessage()
         self._import_btn.setEnabled(self._svc.extractor_ready)
+        self._integrate_btn.setEnabled(self._svc.extractor_ready)
         self._ai_btn.setEnabled(True)
         QMessageBox.critical(
             self, "No se pudo leer el paquete",
             f"No pude extraer la estructura del paquete:\n\n{message}",
         )
+
+    # --- Integrar un paquete en el manual ABIERTO -------------------------
+
+    def _on_integrate_package(self) -> None:
+        """Mete un paquete (zip/Power BI) DENTRO del manual abierto: lo extrae y
+        COMPLEMENTA el manual del editor con su estructura. No crea uno nuevo."""
+        if self._progress.isVisible():  # ya hay una tarea en curso: no pisar el worker
+            return
+        if not self._current:
+            QMessageBox.information(self, "Integrar paquete", "Seleccioná un manual primero.")
+            return
+        base = self._editor.toPlainText().strip()
+        if not base:
+            QMessageBox.warning(
+                self, "Integrar paquete",
+                "No hay manual en el editor para integrar.\n"
+                "Abrí o generá un manual primero, después integrale el paquete.",
+            )
+            return
+        if not (self._svc.extractor_ready and self._svc.ai_ready):
+            QMessageBox.warning(
+                self, "Integrar paquete", "Necesitás la IA y el extractor configurados.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Elegí el paquete a integrar", "",
+            "Paquete (*.zip *.msapp *.xlsm *.pbit *.pbix)",
+        )
+        if not path:
+            return
+        # Congelamos el contexto AHORA (hilo principal, toca la base) para el callback.
+        self._integrate_ctx = {
+            "base": base,
+            "hint": self._svc.category_hint(self._current.category),
+            "tipo": self._current.type,
+        }
+        self._begin_integrate_extraction(path)
+
+    def _begin_integrate_extraction(self, path: str) -> None:
+        self._import_btn.setEnabled(False)
+        self._integrate_btn.setEnabled(False)
+        self._ai_btn.setEnabled(False)
+        self._ai_busy(True)
+        nombre = path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        # Mostramos el paso a paso en el panel de Actividad IA (lo trae al frente).
+        self._ai_log_reset(f"📎 Integrando «{nombre}» en «{self._current.title}»…\n")
+        self._ai_log_append("🔎 Paso 1 — Leyendo y extrayendo la estructura del paquete (LOCAL, sin IA)…")
+        self._ai_status.setText(f"📎 Leyendo «{nombre}»…")
+
+        def read_and_extract() -> object:
+            with open(path, "rb") as f:
+                data = f.read()
+            return self._svc.extract_package(data, path)
+
+        self._worker = TaskWorker(read_and_extract)
+        self._worker.finished_ok.connect(self._on_integrate_extracted)
+        self._worker.failed.connect(self._on_extract_error)
+        self._worker.start()
+
+    def _on_integrate_extracted(self, extracted) -> None:
+        """Extraído el paquete: se documenta COMPONENTE POR COMPONENTE (llamadas
+        chicas de obrero, sin re-emitir el manual) y se ADJUNTA al final. Cada paso
+        se reporta en el panel de Actividad IA, separando lo LOCAL de la IA."""
+        ctx = self._integrate_ctx
+        # Paso 2: categorización/ruteo del conocimiento — sigue siendo LOCAL, sin IA.
+        self._ai_log_append("🏷️ Paso 2 — Detectando tecnología y ruteando el conocimiento (LOCAL, sin IA):")
+        self._ai_log_append(self._componentes_detectados(extracted))
+        # Paso 3: la IA redacta cada componente como una sección (llamadas chicas).
+        modelo = self._svc.ai_model_name or "modelo principal"
+        n = len(extracted.components) or 1
+        self._ai_log_append(
+            f"🧠 Paso 3 — La IA («{modelo}») redacta {n} sección(es) — una llamada CHICA "
+            f"por componente, para NO chocar con el corte de 120s. No reescribe el "
+            f"manual «{self._current.title}»: lo deja intacto y agrega las secciones."
+        )
+
+        def call() -> str:
+            return self._svc.ai_document_package_section(
+                extracted=extracted, tipo=ctx["tipo"], categoria_hint=ctx["hint"],
+                progress=self._worker.progress.emit,  # avance componente a componente
+            )
+
+        self._ai_status.setText(f"🧠 «{modelo}» redactando las secciones del paquete…")
+        self._worker = AIWorker(call)
+        self._worker.progress.connect(self._on_gen_progress)  # reusa el logger de avance
+        self._worker.finished_ok.connect(self._on_integrate_done)
+        self._worker.failed.connect(self._on_ai_error)
+        self._worker.start()
+
+    def _on_integrate_done(self, section_md: str) -> None:
+        """Listo: ADJUNTA las secciones generadas al final del manual abierto (sin
+        tocar lo existente), muestra el resultado y deja al usuario en el Editor."""
+        self._ai_busy(False)
+        base = self._integrate_ctx["base"]
+        nuevo = f"{base}\n\n{section_md}" if base else section_md
+        self._editor.setPlainText(nuevo)
+        self._ai_log_append(
+            f"\n✓ Se agregaron {len(section_md)} caracteres como sección(es) nueva(s) "
+            "al final del manual. Lo anterior quedó intacto.\n"
+            "Revisá el editor y guardá la versión."
+        )
+        self._ai_status.setText("✓ Paquete integrado (adjuntado). Revisalo y guardá la versión.")
+        self._ai_btn.setEnabled(True)
+        self._import_btn.setEnabled(self._svc.extractor_ready)
+        self._integrate_btn.setEnabled(self._svc.extractor_ready)
+        self._tabs.setCurrentIndex(0)  # al Editor para revisar/guardar
 
     def _on_extract_done(self, extracted) -> None:
         """Tras extraer (hilo principal): avisos, detección de re-import y arranque
@@ -715,6 +856,7 @@ class MainWindow(QMainWindow):
         self._ai_status.setText("✓ Paquete analizado.")
         self.statusBar().clearMessage()
         self._import_btn.setEnabled(self._svc.extractor_ready)
+        self._integrate_btn.setEnabled(self._svc.extractor_ready)
         self._ai_btn.setEnabled(True)
 
         if extracted.warnings:
@@ -834,10 +976,14 @@ class MainWindow(QMainWindow):
             "power-apps-canvas": "app(s) de Power Apps",
             "dataverse-table": "tabla(s) de Dataverse",
             "dataverse-security": "esquema(s) de seguridad",
+            "excel-vba": "macro(s) VBA",
+            "excel-powerquery": "consultas Power Query",
+            "power-bi-model": "modelo de datos de Power BI",
+            "power-bi-report": "reporte de Power BI",
         }
-        counts = Counter(c.kind for c in extracted.components)
-        if not counts:
-            return "📦 Detecté el paquete pero SIN componentes legibles."
+        # Atómico (sin sub-componentes): la unidad es el paquete mismo, por su kind.
+        unidades = extracted.components or [extracted]
+        counts = Counter(c.kind for c in unidades)
         detalle = ", ".join(
             f"{n} {_ETIQUETAS.get(kind, kind)}" for kind, n in counts.items()
         )
@@ -889,6 +1035,7 @@ class MainWindow(QMainWindow):
         self._ai_busy(False)
         self._ai_btn.setEnabled(True)
         self._import_btn.setEnabled(self._svc.extractor_ready)
+        self._integrate_btn.setEnabled(self._svc.extractor_ready)
         self._complete_btn.setEnabled(self._svc.ai_ready)
         self._refresh_manual_list(select_id=self._import_func_id)  # abre el funcional
         self._tabs.setCurrentIndex(0)  # volvemos al Editor para revisar/guardar
@@ -905,6 +1052,7 @@ class MainWindow(QMainWindow):
         self._ai_busy(False)
         self._ai_btn.setEnabled(True)
         self._import_btn.setEnabled(self._svc.extractor_ready)
+        self._integrate_btn.setEnabled(self._svc.extractor_ready)
         self._complete_btn.setEnabled(self._svc.ai_ready)
         self._ai_status.setText("")
         if self._import_func_id is not None:
@@ -930,12 +1078,14 @@ class MainWindow(QMainWindow):
         self._ai_status.setText("✓ Listo. Revisalo y guardá la versión.")
         self._ai_btn.setEnabled(True)
         self._import_btn.setEnabled(self._svc.extractor_ready)
+        self._integrate_btn.setEnabled(self._svc.extractor_ready)
 
     def _on_ai_error(self, message: str) -> None:
         self._ai_busy(False)
         self._ai_status.setText("")
         self._ai_btn.setEnabled(True)
         self._import_btn.setEnabled(self._svc.extractor_ready)
+        self._integrate_btn.setEnabled(self._svc.extractor_ready)
         self._complete_btn.setEnabled(self._svc.ai_ready)
         QMessageBox.critical(self, "Error de IA", message)
 
@@ -977,6 +1127,7 @@ class MainWindow(QMainWindow):
         self._ai_busy(False)
         self._ai_btn.setEnabled(True)
         self._import_btn.setEnabled(self._svc.extractor_ready)
+        self._integrate_btn.setEnabled(self._svc.extractor_ready)
         self._complete_btn.setEnabled(self._svc.ai_ready)
         self._ai_status.setText("")
 

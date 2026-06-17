@@ -17,10 +17,12 @@ from src.infrastructure.ai.openai_compatible_provider import (
 )
 from src.infrastructure.category_repository import SQLiteCategoryRepository
 from src.infrastructure.db import connect, init_db
+from src.infrastructure.docx.python_docx_renderer import PythonDocxRenderer
 from src.infrastructure.extractors.dispatcher import CompositePackageExtractor
-from src.infrastructure.extractors.excel_vba import ExcelVBAExtractor
+from src.infrastructure.extractors.excel import ExcelWorkbookExtractor
 from src.infrastructure.extractors.power_apps import PowerAppsCanvasExtractor
 from src.infrastructure.extractors.power_automate import PowerAutomateFlowExtractor
+from src.infrastructure.extractors.power_bi import PowerBIExtractor
 from src.infrastructure.extractors.solution import SolutionExtractor
 from src.infrastructure.manual_repository import SQLiteManualRepository
 from src.infrastructure.package_snapshot_repository import SQLitePackageSnapshotRepository
@@ -61,6 +63,9 @@ def main() -> int:
     renderer = WeasyPrintRenderer(
         brand=config.brand_name, tagline=config.brand_tagline, logo_path=config.brand_logo
     )
+    docx_renderer = PythonDocxRenderer(
+        brand=config.brand_name, tagline=config.brand_tagline, logo_path=config.brand_logo
+    )
     ai = OpenAICompatibleProvider(config.ai) if config.ai else None
     worker_ai = _build_worker(config)
     # OJO el orden: la Solution va PRIMERO porque también contiene .msapp adentro
@@ -69,13 +74,14 @@ def main() -> int:
         SolutionExtractor(),
         PowerAutomateFlowExtractor(),
         PowerAppsCanvasExtractor(),
-        ExcelVBAExtractor(),
+        PowerBIExtractor(),  # informe .pbit/.pbix: modelo de datos + reporte
+        ExcelWorkbookExtractor(),  # macros VBA + consultas Power Query
     ])
 
     # --- Servicio (el caso de uso) ---
     service = ManualService(
         repo, renderer=renderer, ai=ai, categories=categories, extractor=extractor,
-        worker_ai=worker_ai, snapshots=snapshots,
+        worker_ai=worker_ai, snapshots=snapshots, docx_renderer=docx_renderer,
     )
 
     # --- Estado de config en memoria (para no pisar campos al guardar) ---
@@ -141,7 +147,8 @@ def main() -> int:
 
     # --- Callback: identidad del documento (marca/lema/logo del PDF) ---
     def set_identity(brand: str, tagline: str, logo: str) -> None:
-        renderer.set_identity(brand, tagline, logo)  # aplica al instante
+        renderer.set_identity(brand, tagline, logo)  # aplica al instante (PDF)
+        docx_renderer.set_identity(brand, tagline, logo)  # y Word
         state.update(brand_name=brand, brand_tagline=tagline, brand_logo=logo)
         _persist()
 

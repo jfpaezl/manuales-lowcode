@@ -8,6 +8,9 @@ weasyprint>=63
 Jinja2>=3.1
 markdown>=3.6
 
+# --- Exportar a Word (.docx). Pura Python: NO necesita Office ni GTK. ---
+python-docx>=1.1
+
 # --- IA (cliente OpenAI-compatible → OpenCode Go u otros) ---
 # La config se lee de config.toml con tomllib (stdlib), no hace falta dotenv.
 openai>=1.40

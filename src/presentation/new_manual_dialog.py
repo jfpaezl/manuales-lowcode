@@ -23,7 +23,17 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-_FILE_FILTER = "Paquete (*.zip *.msapp *.xlsm)"
+_FILE_FILTER = "Paquete (*.zip *.msapp *.xlsm *.pbit *.pbix)"
+
+# Ayuda para exportar bien cada origen (sobre todo Power BI, que necesita el .pbit).
+_EXPORT_HELP = (
+    "ℹ️ Cómo exportar para que se pueda leer:\n"
+    "• Power BI → Archivo → Exportar → Plantilla de Power BI (.pbit). "
+    "El .pbix NO sirve para el modelo/medidas (viene comprimido); el .pbit trae "
+    "tablas, medidas DAX y relaciones.\n"
+    "• Power Automate / Power Apps → exportá la Solución o el flujo/app como .zip.\n"
+    "• Excel (macros / Power Query) → guardá el libro como .xlsm."
+)
 
 
 class NewManualDialog(QDialog):
@@ -45,7 +55,7 @@ class NewManualDialog(QDialog):
 
         # --- Selector de fuente ---
         self._src_topic = QRadioButton("Desde un tema escrito")
-        self._src_pkg = QRadioButton("Desde un paquete (.zip / .msapp / .xlsm)")
+        self._src_pkg = QRadioButton("Desde un paquete (.zip / .msapp / .xlsm / .pbit)")
         (self._src_pkg if source_default == "package" else self._src_topic).setChecked(True)
         self._src_topic.toggled.connect(self._update_source)
         src_row = QHBoxLayout()
@@ -67,14 +77,21 @@ class NewManualDialog(QDialog):
 
         # --- Fuente: PAQUETE ---
         self._pkg_box = QWidget()
-        pkg_row = QHBoxLayout(self._pkg_box)
-        pkg_row.setContentsMargins(0, 0, 0, 0)
+        pkg_layout = QVBoxLayout(self._pkg_box)
+        pkg_layout.setContentsMargins(0, 0, 0, 0)
+        pkg_row = QHBoxLayout()
         self._pick_btn = QPushButton("📂 Elegir archivo…")
         self._pick_btn.clicked.connect(self._pick_file)
         self._file_label = QLabel("(ningún archivo elegido)")
         self._file_label.setStyleSheet("color: #52606d;")
         pkg_row.addWidget(self._pick_btn)
         pkg_row.addWidget(self._file_label, 1)
+        pkg_layout.addLayout(pkg_row)
+        # Comentario de cómo exportar cada origen (clave para Power BI: .pbit, no .pbix).
+        pkg_help = QLabel(_EXPORT_HELP)
+        pkg_help.setWordWrap(True)
+        pkg_help.setStyleSheet("color: #52606d; font-size: 11px; background: #f5f7fa; padding: 6px;")
+        pkg_layout.addWidget(pkg_help)
 
         # --- Datos comunes ---
         common = QWidget()

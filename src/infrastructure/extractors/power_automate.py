@@ -24,6 +24,24 @@ from typing import Any
 
 from ...domain.entities import ExtractedPackage
 from ...domain.ports import PackageExtractor, UnsupportedPackageError
+from ._connectors import clean_path, connector_label
+
+# Campos de `inputs.parameters` que dicen DÓNDE viven los datos (la ruta que el
+# usuario quiere ver en el manual). Lo demás (item/*, body, $filter, expresiones de
+# payload) es contenido dinámico, no ubicación: se ignora. El orden es el de lectura.
+_PARAMS_UBICACION = [
+    ("dataset", "sitio"),
+    ("source", "origen"),
+    ("documentLibrary", "biblioteca"),
+    ("table", "tabla/lista"),
+    ("folderPath", "carpeta"),
+    ("path", "ruta"),
+    ("drive", "unidad"),
+    ("file", "archivo"),
+    ("name", "nombre"),
+    ("server", "servidor"),
+    ("database", "base de datos"),
+]
 
 # Traducción de tipos crudos del Workflow Definition Language a algo legible.
 _TIPO_LEGIBLE = {
@@ -244,11 +262,18 @@ class PowerAutomateFlowExtractor(PackageExtractor):
         # Cualquier variante de conector: OpenApiConnection[Webhook|Notification], ApiConnection…
         if raw_type.startswith("openapiconnection") or raw_type.startswith("apiconnection"):
             host = inputs.get("host") if isinstance(inputs, dict) else None
-            if isinstance(host, dict):
-                # operationId + connectionName alcanzan; el apiId es una ruta larga y ruidosa.
-                bits = [host.get("operationId"), host.get("connectionName")]
-                return " / ".join(str(b) for b in bits if b)
-            return ""
+            if not isinstance(host, dict):
+                return ""
+            # operationId + conector legible; el apiId es una ruta larga y ruidosa.
+            cabecera_bits = [host.get("operationId"), connector_label(host.get("connectionName"))]
+            cabecera = " · ".join(str(b) for b in cabecera_bits if b)
+            # La RUTA real (sitio/lista/archivo/carpeta) vive en inputs.parameters,
+            # no en host. Antes se descartaba → el manual lo dejaba en [COMPLETAR].
+            ubic = cls._ubicacion(inputs.get("parameters") if isinstance(inputs, dict) else None)
+            if ubic:
+                detalle = " · ".join(ubic)
+                return f"{cabecera} — {detalle}" if cabecera else detalle
+            return cabecera
         if raw_type == "http" and isinstance(inputs, dict):
             return f"{inputs.get('method', '')} {inputs.get('uri', '')}".strip()
         if raw_type in ("initializevariable", "setvariable") and isinstance(inputs, dict):
@@ -260,6 +285,20 @@ class PowerAutomateFlowExtractor(PackageExtractor):
         if raw_type == "compose":
             return cls._short(inputs)
         return ""
+
+    @staticmethod
+    def _ubicacion(params: Any) -> list[str]:
+        """Saca de los parameters del conector solo los campos de UBICACIÓN
+        (sitio, lista, archivo, carpeta…), ya legibles. Lo demás es payload."""
+        if not isinstance(params, dict):
+            return []
+        out: list[str] = []
+        for key, etiqueta in _PARAMS_UBICACION:
+            if key in params:
+                val = clean_path(params[key])
+                if val:
+                    out.append(f"{etiqueta}: {val}")
+        return out
 
     @staticmethod
     def _short(value: Any, limit: int = 80) -> str:

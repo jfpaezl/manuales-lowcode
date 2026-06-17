@@ -11,11 +11,16 @@ LO QUE GENERA, el conocimiento tiene que viajar en el prompt. Una cosa por archi
 agregar una tecnología nueva = agregar un módulo y registrarlo acá."""
 from __future__ import annotations
 
-from . import dataverse, excel_vba, power_apps, power_automate, solution
+from . import (
+    dataverse, excel_powerquery, excel_vba, power_apps, power_automate, power_bi,
+    solution,
+)
 
 # Registro: kind del componente → guía de qué documentar y cómo.
 _REGISTRY: dict[str, str] = {}
-for _mod in (power_automate, power_apps, excel_vba, dataverse, solution):
+for _mod in (
+    power_automate, power_apps, excel_vba, excel_powerquery, power_bi, dataverse, solution
+):
     _REGISTRY.update(_mod.GUIDANCE)
 
 
@@ -32,6 +37,8 @@ _CATEGORY_KEYWORDS: list[tuple[tuple[str, ...], str]] = [
     (("dataverse", "tabla", "entidad", "cds"), "dataverse-table"),
     (("power automate", "powerautomate", "flujo", "flow"), "power-automate-flow"),
     (("power apps", "powerapps", "canvas"), "power-apps-canvas"),
+    (("power bi", "powerbi", "dax", "informe de power bi"), "power-bi-model"),
+    (("power query", "powerquery", "lenguaje m"), "excel-powerquery"),
     (("vba", "macro", "excel", "office"), "excel-vba"),
 ]
 
@@ -59,6 +66,10 @@ _CONTENT_SIGNALS: list[tuple[tuple[str, ...], str]] = [
       "desencadenador"), "power-automate-flow"),
     (("power apps", "powerapps", "power fx", "patch(", "navigate(", ".pa.yaml"),
      "power-apps-canvas"),
+    (("power bi", "powerbi", "datamodelschema", "compatibilitylevel", "visualtype",
+      "cardvisual", "report/layout", "evaluate(", "calculate ("), "power-bi-model"),
+    (("power query", "powerquery", "section section1", "section1.m", "datamashup",
+      'shared #"', "table.selectrows", "excel.currentworkbook"), "excel-powerquery"),
     (("vba", "macro", "end sub", "dim ", "worksheet", "workbook"), "excel-vba"),
 ]
 

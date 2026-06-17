@@ -676,3 +676,111 @@ def test_delete_category_libre_funciona(service_factory):
     svc.add_category("Temporal")
     svc.delete_category("Temporal")
     assert "Temporal" not in [c.label for c in svc.list_categories()]
+
+
+# --- Exportar a Word --------------------------------------------------------
+
+def _svc_con_docx(docx_renderer=None):
+    conn = connect(":memory:")
+    init_db(conn)
+    return ManualService(SQLiteManualRepository(conn), docx_renderer=docx_renderer)
+
+
+def test_build_docx_delega_en_el_renderer():
+    from src.domain.entities import Manual, ManualVersion
+    from src.domain.ports import DocxRenderer
+
+    class FakeDocx(DocxRenderer):
+        def render(self, manual, version) -> bytes:
+            return f"DOCX {manual.title} v{version.version}".encode()
+
+    svc = _svc_con_docx(FakeDocx())
+    assert svc.docx_ready
+    m = Manual(title="Cuentas", type=ManualType.TECNICO, category="Power Automate")
+    out = svc.build_docx(m, ManualVersion(version=3, content_html=""))
+    assert out == b"DOCX Cuentas v3"
+
+
+def test_build_docx_sin_renderer_falla():
+    from src.domain.entities import Manual, ManualVersion
+
+    svc = _svc_con_docx(None)
+    assert not svc.docx_ready
+    with pytest.raises(RuntimeError, match="Word"):
+        svc.build_docx(
+            Manual(title="X", type=ManualType.TECNICO, category="X"),
+            ManualVersion(version=1, content_html=""),
+        )
+
+
+# --- Integrar un paquete en un manual existente -----------------------------
+
+def test_ai_complement_with_package_integra_la_estructura(service_factory):
+    ai = FakeAI("## Manual ya integrado")
+    svc = service_factory(ai=ai)
+    pkg = ExtractedPackage(
+        kind="power-bi-model", name="Tablero",
+        summary_markdown="## Tabla: Ventas\n- Monto (double)\nMedida: Total = SUM(Monto)",
+    )
+    out = svc.ai_complement_with_package(
+        current_markdown="# Manual\n## Datos generales\nProceso X.",
+        extracted=pkg, tipo=ManualType.TECNICO, categoria_hint="Power BI",
+    )
+    assert out == "## Manual ya integrado"
+    # El prompt llevó la estructura del paquete Y el manual actual a complementar.
+    assert "## Tabla: Ventas" in ai.last_user
+    assert "Total = SUM(Monto)" in ai.last_user
+    assert "Manual actual" in ai.last_user
+    assert "ESTRUCTURA EXTRA" in ai.last_user  # se enmarca como material extraído
+
+
+def test_document_package_section_una_llamada_chica_por_componente(service_factory):
+    # Anti-timeout: cada componente = UNA llamada de obrero, NO una llamada grande
+    # que re-emita todo. Para un Power BI (modelo + reporte) → 2 llamadas.
+    ai = RecordingAI("SECCION")
+    svc = service_factory(ai=ai)
+    pkg = ExtractedPackage(
+        kind="power-bi", name="Tablero", summary_markdown="resumen",
+        components=[
+            ExtractedPackage(kind="power-bi-model", name="Modelo", summary_markdown="## Tabla"),
+            ExtractedPackage(kind="power-bi-report", name="Reporte", summary_markdown="## Página"),
+        ],
+    )
+    out = svc.ai_document_package_section(
+        extracted=pkg, tipo=ManualType.TECNICO, categoria_hint="Power BI")
+    assert len(ai.calls) == 2          # una por componente, ninguna re-emite el manual
+    assert out.count("SECCION") == 2   # las dos secciones, unidas para adjuntar
+
+
+def test_document_package_section_atomico_una_sola_llamada(service_factory):
+    ai = RecordingAI("S")
+    svc = service_factory(ai=ai)
+    pkg = ExtractedPackage(kind="excel-vba", name="Macro", summary_markdown="## Módulo")
+    out = svc.ai_document_package_section(
+        extracted=pkg, tipo=ManualType.TECNICO, categoria_hint="Macros")
+    assert len(ai.calls) == 1          # atómico: la unidad es el paquete mismo
+    assert out == "S"
+
+
+def test_document_package_section_resiliente_si_falla_un_componente(service_factory):
+    # Si un componente explota, deja [COMPLETAR] y sigue con el resto (no pierde todo).
+    class FlakyAI(AIProvider):
+        def __init__(self):
+            self.n = 0
+        def complete(self, system_prompt, user_prompt):
+            self.n += 1
+            if self.n == 1:
+                raise RuntimeError("boom")
+            return "OK2"
+    svc = service_factory(ai=FlakyAI())
+    pkg = ExtractedPackage(
+        kind="power-bi", name="T", summary_markdown="r",
+        components=[
+            ExtractedPackage(kind="power-bi-model", name="Modelo", summary_markdown="a"),
+            ExtractedPackage(kind="power-bi-report", name="Reporte", summary_markdown="b"),
+        ],
+    )
+    out = svc.ai_document_package_section(
+        extracted=pkg, tipo=ManualType.TECNICO, categoria_hint="Power BI")
+    assert "[COMPLETAR]" in out and "Modelo" in out   # el que falló, marcado
+    assert "OK2" in out                                # el otro, redactado

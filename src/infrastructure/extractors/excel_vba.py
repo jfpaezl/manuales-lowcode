@@ -20,30 +20,18 @@ class ExcelVBAExtractor(PackageExtractor):
         return any(n.lower().endswith("vbaproject.bin") for n in names)
 
     def extract(self, data: bytes, filename: str = "") -> ExtractedPackage:
-        # Import perezoso: la app no obliga a tener oletools si no importás macros.
-        from oletools.olevba import VBA_Parser
+        comp = self.read_component(data, filename)
+        if comp is None:
+            raise UnsupportedPackageError("El archivo no tiene macros VBA con código.")
+        return comp
 
-        try:
-            vba = VBA_Parser(filename=filename or "macro.xlsm", data=data)
-        except Exception as exc:  # noqa: BLE001 — archivo inválido/corrupto
-            raise UnsupportedPackageError(
-                f"No pude abrir el archivo de Excel: {exc}"
-            ) from exc
-
-        try:
-            if not vba.detect_vba_macros():
-                raise UnsupportedPackageError("El archivo no tiene macros VBA.")
-            modules: list[tuple[str, str]] = []
-            for (_f, _stream, vba_filename, vba_code) in vba.extract_macros():
-                if vba_code and vba_code.strip():
-                    modules.append((str(vba_filename), vba_code.strip()))
-        finally:
-            vba.close()
-
+    def read_component(self, data: bytes, filename: str = "") -> ExtractedPackage | None:
+        """Devuelve el componente excel-vba, o None si el libro no tiene macros con
+        código. Reusable por el ExcelWorkbookExtractor (que compone VBA + Power Query).
+        Solo lanza si el archivo no se puede ABRIR (corrupto)."""
+        modules = self._read_modules(data, filename)
         if not modules:
-            raise UnsupportedPackageError(
-                "El archivo declara macros, pero los módulos no tienen código."
-            )
+            return None
 
         name = self._name(filename)
         lines = [
@@ -61,6 +49,29 @@ class ExcelVBAExtractor(PackageExtractor):
             kind="excel-vba", name=name, summary_markdown="\n".join(lines),
             unique_name=name,  # identidad para reconocer la misma macro al re-importar
         )
+
+    @staticmethod
+    def _read_modules(data: bytes, filename: str) -> list[tuple[str, str]]:
+        # Import perezoso: la app no obliga a tener oletools si no importás macros.
+        from oletools.olevba import VBA_Parser
+
+        try:
+            vba = VBA_Parser(filename=filename or "macro.xlsm", data=data)
+        except Exception as exc:  # noqa: BLE001 — archivo inválido/corrupto
+            raise UnsupportedPackageError(
+                f"No pude abrir el archivo de Excel: {exc}"
+            ) from exc
+
+        try:
+            if not vba.detect_vba_macros():
+                return []
+            modules: list[tuple[str, str]] = []
+            for (_f, _stream, vba_filename, vba_code) in vba.extract_macros():
+                if vba_code and vba_code.strip():
+                    modules.append((str(vba_filename), vba_code.strip()))
+            return modules
+        finally:
+            vba.close()
 
     @staticmethod
     def _name(filename: str) -> str:

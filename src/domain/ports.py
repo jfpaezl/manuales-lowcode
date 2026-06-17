@@ -109,6 +109,17 @@ class PDFRenderer(ABC):
         """Devuelve el PDF como bytes (para guardar en SQLite)."""
 
 
+class DocxRenderer(ABC):
+    """Genera el documento Word (.docx) de una versión de manual.
+
+    Hermano de PDFRenderer: misma entrada (manual + versión), otra salida. Permite
+    descargar el manual en Word, editable, sin depender de Office ni de GTK."""
+
+    @abstractmethod
+    def render(self, manual: Manual, version: ManualVersion) -> bytes:
+        """Devuelve el .docx como bytes (para escribir a disco)."""
+
+
 class AIProvider(ABC):
     """Proveedor de IA. Cualquier endpoint OpenAI-compatible entra acá."""
 

@@ -69,6 +69,7 @@ _DEFAULT_CATEGORIES = [
     ("Power Apps", "Power Apps (Power Platform): canvas apps"),
     ("Power Automate", "flujos de Power Automate (Power Platform)"),
     ("Dataverse", "tablas de Dataverse (Power Platform)"),
+    ("Power BI", "informes de Power BI (modelo de datos, medidas DAX y reporte)"),
     ("Macros", "macros (Excel/VBA/Office)"),
     ("Python", "scripts de Python"),
     ("Low-Code", "una solución low-code"),
@@ -84,6 +85,7 @@ _KNOWLEDGE_CATEGORIES = [
     ("Power Apps", "Power Apps (Power Platform): canvas apps"),
     ("Power Automate", "flujos de Power Automate (Power Platform)"),
     ("Dataverse", "tablas de Dataverse (Power Platform)"),
+    ("Power BI", "informes de Power BI (modelo de datos, medidas DAX y reporte)"),
     ("Macros", "macros (Excel/VBA/Office)"),
 ]
 
